@@ -1,0 +1,103 @@
+networks:
+  building-lan:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+services:
+  syslog:
+    build: ./syslog
+    container_name: syslog
+    hostname: syslog
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.10
+    ports:
+      - "5140:514/tcp"
+      - "5140:514/udp"
+    volumes:
+      - ../data/syslog:/var/log/remote
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "514"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    hostname: postgres
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.20
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: monitor
+      POSTGRES_DB: network_logs
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d network_logs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  router:
+    build: ./router
+    container_name: router
+    hostname: router
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.11
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
+  switch:
+    build: ./switch
+    container_name: switch
+    hostname: switch
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.2
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ap:
+    build: ./ap
+    container_name: ap
+    hostname: ap
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.3
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
+  firewall:
+    build: ./firewall
+    container_name: firewall
+    hostname: firewall
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.4
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
+

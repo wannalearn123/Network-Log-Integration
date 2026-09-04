@@ -1,0 +1,29 @@
+# Secrets — .env holds NVIDIA_API_KEY + PG creds, never commit
+.env
+
+# Python — venv, bytecode, tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Runtime data — syslog feeds, postgres volume, launcher logs
+data/
+logs/
+*.log
+
+# C build artifacts — rebuilt via collector/Makefile
+collector/log_collector
+collector/test_parser
+collector/src/*.o
+test_parser
+
+# Trained model — 800KB+ binary, reproducible via scripts/train_model.py
+pipeline/models/*.pkl
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
