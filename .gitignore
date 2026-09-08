@@ -22,8 +22,3 @@ test_parser
 # Trained model — 800KB+ binary, reproducible via scripts/train_model.py
 pipeline/models/*.pkl
 
-# Editor / OS noise
-.vscode/
-.idea/
-*.swp
-.DS_Store

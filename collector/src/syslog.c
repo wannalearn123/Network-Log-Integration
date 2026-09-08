@@ -3,10 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 
-// ============================================================
 // Syslog facility names
-// ============================================================
 static const char* facility_name(int num) {
     switch (num) {
         case 0: return "kern";
@@ -50,15 +49,10 @@ static const char* severity_name(int num) {
     }
 }
 
-// ============================================================
-// Header field parsers (moved verbatim from parser.c)
-// Format: <PRI>TIMESTAMP HOSTNAME TAG: MSG
-// rsyslog format: YYYY-MM-DDTHH:MM:SS+00:00 HOSTNAME TAG: MSG
-// ============================================================
+// Header field parsers.
 void parse_priority(log_entry_t* entry, const char** cursor) {
     const char* p = *cursor;
 
-    // Check for syslog priority <PRI>
     if (*p == '<') {
         p++;
         int pri = atoi(p);
@@ -68,55 +62,88 @@ void parse_priority(log_entry_t* entry, const char** cursor) {
         strncpy(entry->facility, facility_name(facility_num), sizeof(entry->facility) - 1);
         strncpy(entry->severity, severity_name(severity_num), sizeof(entry->severity) - 1);
 
-        // Skip past >
         while (*p && *p != '>') p++;
         if (*p == '>') p++;
     } else {
-        // Default values if no priority
         strncpy(entry->facility, "user", sizeof(entry->facility) - 1);
         strncpy(entry->severity, "info", sizeof(entry->severity) - 1);
     }
 
-    // Skip leading space
     while (*p == ' ') p++;
-
     *cursor = p;
 }
 
 void parse_timestamp(log_entry_t* entry, const char** cursor) {
     const char* p = *cursor;
 
-    // Parse timestamp — rsyslog ISO format: YYYY-MM-DDTHH:MM:SS+00:00
-    // Or traditional: "Aug 31 10:23:01"
-    if (isdigit(*p) && *(p+4) == '-') {
-        // ISO format: 2026-08-31T04:44:43+00:00
+    if (isdigit((unsigned char)*p) && *(p+4) == '-') {
         int i = 0;
         while (*p && *p != ' ' && i < 63) {
             entry->timestamp[i++] = *p++;
         }
         entry->timestamp[i] = '\0';
+    } else if (isalpha((unsigned char)*p)) {
+        // Traditional MMM DD HH:MM:SS — normalize to ISO with current year.
+        char mon[4] = "";
+        int day = 0, hh = 0, mm = 0, ss = 0;
+        int month = 0;
+        static const char *names[] = {
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        };
+        if (sscanf(p, "%3s %d %d:%d:%d", mon, &day, &hh, &mm, &ss) == 5) {
+            for (int m = 0; m < 12; m++) {
+                if (strcmp(mon, names[m]) == 0) {
+                    month = m + 1;
+                    break;
+                }
+            }
+        }
+        if (month >= 1 && month <= 12
+                && day >= 1 && day <= 31
+                && hh >= 0 && hh <= 23
+                && mm >= 0 && mm <= 59
+                && ss >= 0 && ss <= 60) {
+            time_t now = time(NULL);
+            struct tm *tm = gmtime(&now);
+            int year = (tm ? tm->tm_year + 1900 : 2026);
+            snprintf(entry->timestamp, sizeof(entry->timestamp),
+                "%04d-%02d-%02dT%02d:%02d:%02d+00:00",
+                year, month, day, hh, mm, ss);
+            for (int t = 0; t < 3 && *p; t++) {
+                while (*p && *p != ' ') p++;
+                while (*p == ' ') p++;
+            }
+        } else {
+            // Unparseable: use received time so the row stays insertable.
+            time_t now = time(NULL);
+            struct tm *tm = gmtime(&now);
+            if (tm) {
+                snprintf(entry->timestamp, sizeof(entry->timestamp),
+                    "%04d-%02d-%02dT%02d:%02d:%02d+00:00",
+                    tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+                    tm->tm_hour, tm->tm_min, tm->tm_sec);
+            }
+        }
     } else {
-        // Traditional: "Aug 31 10:23:01"
-        int i = 0;
-        while (*p && *p != ' ' && i < 63) {
-            entry->timestamp[i++] = *p++;
+        // Unparseable: use received time so the row stays insertable.
+        time_t now = time(NULL);
+        struct tm *tm = gmtime(&now);
+        if (tm) {
+            snprintf(entry->timestamp, sizeof(entry->timestamp),
+                "%04d-%02d-%02dT%02d:%02d:%02d+00:00",
+                tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+                tm->tm_hour, tm->tm_min, tm->tm_sec);
         }
-        entry->timestamp[i] = '\0';
-
-        // May need to grab the year or just use what we have
-        // For now, keep the 3-part timestamp
     }
 
-    // Skip space
     while (*p == ' ') p++;
-
     *cursor = p;
 }
 
 void parse_hostname(log_entry_t* entry, const char** cursor) {
     const char* p = *cursor;
 
-    // Parse hostname (until next space)
     {
         int i = 0;
         while (*p && *p != ' ' && *p != ':' && i < 63) {
@@ -125,7 +152,7 @@ void parse_hostname(log_entry_t* entry, const char** cursor) {
         entry->hostname[i] = '\0';
     }
 
-    // Skip ": " after hostname (rsyslog format) or space
+    // Skip ": " or space after hostname
     while (*p == ' ' || *p == ':') p++;
 
     *cursor = p;
@@ -134,22 +161,19 @@ void parse_hostname(log_entry_t* entry, const char** cursor) {
 void skip_tag(const char** cursor) {
     const char* p = *cursor;
 
-    // Skip tag (process name like "routerd:", "switchd:", etc.)
-    // The tag is everything up to ": " or just the first word before ":"
+    // Skip past ": " separator and process tag.
     while (*p && *p != '\0') {
         if (*p == ':' && *(p+1) == ' ') {
             p += 2;  // skip ": "
             break;
         }
         if (*p == ':' && *(p+1) != ' ') {
-            // Could be part of tag like "hostapd:" — keep going
             p++;
             continue;
         }
         p++;
     }
 
-    // Skip leading space of message
     while (*p == ' ') p++;
 
     *cursor = p;

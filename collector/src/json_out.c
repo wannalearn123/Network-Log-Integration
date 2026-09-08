@@ -3,11 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ============================================================
-// Convert to JSON
-// ============================================================
-
-// Worst-case escaped length of a string (control chars -> \uXXXX = 6 bytes)
+// Worst-case escaped length of a string (control chars -> \uXXXX = 6 bytes).
 static size_t json_escaped_len(const char* s) {
     size_t n = 0;
     for (; s && *s; s++) {
@@ -25,7 +21,6 @@ static size_t json_escaped_len(const char* s) {
 }
 
 // Write s with full JSON escaping. dst must have json_escaped_len(s)+1 bytes.
-// Returns pointer to the terminating position (not NUL-terminated by this fn).
 static char* json_write_escaped(char* dst, const char* s) {
     for (; s && *s; s++) {
         unsigned char c = (unsigned char)*s;
@@ -51,18 +46,16 @@ static char* json_write_escaped(char* dst, const char* s) {
 char* to_json(const log_entry_t* entry) {
     if (!entry) return NULL;
 
-    // Exact-size single allocation: fixed overhead + field lengths +
-    // worst-case escaped raw_line. raw_line caps at 2047 chars x6 = ~12KB,
-    // so this stays bounded (~13KB typical, hard cap 64KB sanity).
+    // Single allocation: fixed overhead + worst-case escaped lengths, capped at 64KB.
     size_t need = 256
-        + strlen(entry->timestamp) + strlen(entry->hostname)
-        + strlen(entry->facility) + strlen(entry->severity)
-        + strlen(entry->device_type) + strlen(entry->event)
-        + strlen(entry->src_ip) + strlen(entry->dst_ip)
-        + strlen(entry->proto) + 16 /* dst_port */
+        + json_escaped_len(entry->timestamp) + json_escaped_len(entry->hostname)
+        + json_escaped_len(entry->facility) + json_escaped_len(entry->severity)
+        + json_escaped_len(entry->device_type) + json_escaped_len(entry->event)
+        + json_escaped_len(entry->src_ip) + json_escaped_len(entry->dst_ip)
+        + json_escaped_len(entry->proto) + 16 /* dst_port */
         + json_escaped_len(entry->raw_line) + 32;
     if (need > 65536) {
-        return NULL;  // unreachable with current struct sizes; fail loud, not corrupt
+        return NULL;
     }
 
     char* buf = malloc(need);
@@ -77,37 +70,50 @@ char* to_json(const log_entry_t* entry) {
         p += n; \
     } while (0)
 
-    APPEND_FMT("{\"timestamp\":\"%s\","
-        "\"hostname\":\"%s\","
-        "\"facility\":\"%s\","
-        "\"severity\":\"%s\","
-        "\"device_type\":\"%s\","
-        "\"event\":\"%s\"",
-        entry->timestamp,
-        entry->hostname,
-        entry->facility,
-        entry->severity,
-        entry->device_type,
-        entry->event);
+#define APPEND_STR(key, field) do { \
+        APPEND_FMT("\"%s\":\"%s", key, ""); \
+        p = json_write_escaped(p, field); \
+        if (p >= end) { free(buf); return NULL; } \
+        APPEND_FMT("%s", "\""); \
+    } while (0)
+
+    APPEND_FMT("%s", "{");
+    APPEND_STR("timestamp", entry->timestamp);
+    APPEND_FMT("%s", ",");
+    APPEND_STR("hostname", entry->hostname);
+    APPEND_FMT("%s", ",");
+    APPEND_STR("facility", entry->facility);
+    APPEND_FMT("%s", ",");
+    APPEND_STR("severity", entry->severity);
+    APPEND_FMT("%s", ",");
+    APPEND_STR("device_type", entry->device_type);
+    APPEND_FMT("%s", ",");
+    APPEND_STR("event", entry->event);
 
     if (entry->src_ip[0]) {
-        APPEND_FMT(",\"src_ip\":\"%s\"", entry->src_ip);
+        APPEND_FMT("%s", ",");
+        APPEND_STR("src_ip", entry->src_ip);
     }
     if (entry->dst_ip[0]) {
-        APPEND_FMT(",\"dst_ip\":\"%s\"", entry->dst_ip);
+        APPEND_FMT("%s", ",");
+        APPEND_STR("dst_ip", entry->dst_ip);
     }
     if (entry->proto[0]) {
-        APPEND_FMT(",\"proto\":\"%s\"", entry->proto);
+        APPEND_FMT("%s", ",");
+        APPEND_STR("proto", entry->proto);
     }
     if (entry->dst_port >= 0) {
         APPEND_FMT(",\"dst_port\":%d", entry->dst_port);
     }
 
-    APPEND_FMT(",\"raw_line\":\"%s", "");
+    APPEND_FMT("%s", ",");
+    APPEND_FMT("\"raw_line\":\"%s", "");
     p = json_write_escaped(p, entry->raw_line);
+    if (p >= end) { free(buf); return NULL; }
     APPEND_FMT("%s", "\"}");
 
 #undef APPEND_FMT
+#undef APPEND_STR
 
     return buf;
 }

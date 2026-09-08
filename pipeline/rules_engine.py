@@ -1,19 +1,9 @@
-# Rule-based anomaly detection engine.
-#
-# Detects known attack patterns using deterministic rules.
-# Instant execution — no ML dependencies.
+# Rule-based anomaly detection engine — deterministic pattern matching, no ML.
 
 from collections import defaultdict
 
 
-    # Analyze log rows for known attack patterns.
-    #
-    # Args:
-    # rows: list of dicts from query_window()
-    # window_seconds: size of the detection window (for description text)
-    #
-    # Returns:
-    # list of {type, severity, description, src_ip}
+    # Analyze log rows for known attack patterns. Returns list of hit dicts.
 def detect_rules(rows, window_seconds=30):
     hits = []
 

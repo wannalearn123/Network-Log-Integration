@@ -20,13 +20,12 @@ int collector_run(const char* source) {
 
     char line[LINE_BUF_SIZE];
     int pos = 0;
-    int discarding = 0;  // set while draining an over-long line to '\n'
+    int discarding = 0;
 
     while (1) {
         int c = fgetc(in);
 
         if (c == EOF) {
-            // Process any remaining partial line
             if (pos > 0) {
                 line[pos] = '\0';
                 log_entry_t* entry = parse_syslog_line(line);
@@ -46,7 +45,6 @@ int collector_run(const char* source) {
 
         if (c == '\n') {
             if (discarding) {
-                // End of over-long line — drop it entirely, resume fresh
                 discarding = 0;
                 pos = 0;
                 continue;
@@ -71,7 +69,6 @@ int collector_run(const char* source) {
             continue;
         }
 
-        // Buffer overflow protection: warn once, then drain to '\n'
         if (discarding) {
             continue;
         }

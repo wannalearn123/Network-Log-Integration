@@ -4,10 +4,10 @@ import sys
 import time
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from db.init import get_connection, insert_log_batch
+from db.init import get_connection, insert_log_batch, insert_log_entry
+import psycopg2
 
 
 BATCH_SIZE = 5
@@ -23,14 +23,14 @@ def stop():
 
 
     # Read JSON lines from collector stdout, insert into PostgreSQL.
-    #
-    # Single-threaded: the main loop owns the connection/cursor and
-    # flushes by size OR by elapsed time (via select timeout), so no
-    # lock discipline or cross-thread cursor sharing is needed.
 def run_ingest(collector_stdout):
     global running
 
-    conn = get_connection()
+    try:
+        conn = get_connection()
+    except Exception as e:
+        print(f"[INGEST] FATAL: PostgreSQL unreachable: {e}", file=sys.stderr)
+        raise
     cursor = conn.cursor()
     batch = []
     total = 0
@@ -38,7 +38,8 @@ def run_ingest(collector_stdout):
 
     print("[INGEST] Connected to PostgreSQL", file=sys.stderr)
 
-        # Flush accumulated batch to database with rollback on error.
+        # Flush batch; on failure retry row-by-row and skip poison rows.
+        # Connection errors are re-raised so the watchdog stops the pipeline.
     def flush_batch():
         nonlocal total, last_flush
         if not batch:
@@ -49,21 +50,52 @@ def run_ingest(collector_stdout):
             conn.commit()
             total += len(batch)
             print(f"[INGEST] {total} entries inserted", file=sys.stderr)
-        except Exception as e:
-            print(f"[INGEST] Flush failed, rolled back: {e}", file=sys.stderr)
+            batch.clear()
+        except (psycopg2.OperationalError, psycopg2.InterfaceError):
             try:
                 conn.rollback()
             except Exception:
                 pass
-        finally:
+            raise
+        except Exception as e:
+            print(f"[INGEST] Batch failed ({e}) — retrying row-by-row", file=sys.stderr)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            ok = 0
+            skipped = 0
+            for entry in batch:
+                try:
+                    insert_log_entry(cursor, entry)
+                    conn.commit()
+                    ok += 1
+                except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+                except Exception as row_e:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    skipped += 1
+                    print(f"[INGEST] Skipped poison row: {row_e}", file=sys.stderr)
+            total += ok
+            if skipped:
+                print(f"[INGEST] Dropped {skipped} poison rows, kept {ok}", file=sys.stderr)
+            else:
+                print(f"[INGEST] {total} entries inserted", file=sys.stderr)
             batch.clear()
+        finally:
             last_flush = time.monotonic()
 
     running = True
     fd = collector_stdout.fileno()
 
     while running:
-        # Wait up to 1s for data so time-based flush still fires when idle
         try:
             ready, _, _ = select.select([fd], [], [], 1.0)
         except (OSError, ValueError):

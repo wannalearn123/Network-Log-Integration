@@ -1,9 +1,9 @@
-# Bottom stats bar showing aggregate counts.
+# Top stats bar showing aggregate counts.
 
 from textual.widgets import Static
 
 
-    # Bottom bar with log counts, device count, and anomaly breakdown.
+    # Top bar with log counts, device count, and anomaly breakdown.
 class StatsBar(Static):
 
     def __init__(self, **kwargs):

@@ -21,10 +21,10 @@ typedef struct {
 #include "devices.h"
 #include "json_out.h"
 
-// Parse a raw syslog line into a log_entry_t
+// Parse a raw syslog line into a log_entry_t.
 log_entry_t* parse_syslog_line(const char* line);
 
-// Free a log_entry_t
+// Free a log_entry_t.
 void free_entry(log_entry_t* entry);
 
 #endif

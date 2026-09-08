@@ -4,7 +4,6 @@
 #include "parser.h"
 
 // Parse the <PRI> prefix into facility/severity, advancing the cursor.
-// Falls back to facility=user, severity=info when no prefix is present.
 void parse_priority(log_entry_t* entry, const char** cursor);
 
 // Parse the timestamp (rsyslog ISO or traditional), advancing the cursor.

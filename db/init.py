@@ -4,11 +4,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 
-    # Connect to PostgreSQL database.
-    #
-    # Credentials come from the environment with the previous
-    # hardcoded values as defaults, so existing setups keep working
-    # until .env overrides them.
+    # Connect to PostgreSQL with env-based credentials, falling back to defaults.
 def get_connection():
     return psycopg2.connect(
         host=os.environ.get("PGHOST", "172.20.0.20"),
@@ -27,12 +23,10 @@ LOG_COLUMNS = (
 )
 
 
-    # Project a parsed log dict onto LOG_COLUMNS in order.
 def _entry_tuple(entry):
     return tuple(entry.get(col) for col in LOG_COLUMNS)
 
 
-    # Insert a single log entry into the logs table.
 def insert_log_entry(cursor, entry):
     cursor.execute("""
         INSERT INTO logs (timestamp, hostname, facility, severity,
@@ -41,7 +35,6 @@ def insert_log_entry(cursor, entry):
     """, _entry_tuple(entry))
 
 
-    # Insert multiple log entries with one roundtrip.
 def insert_log_batch(cursor, entries):
     entries = list(entries)
     if not entries:
@@ -59,13 +52,6 @@ def insert_log_batch(cursor, entries):
 
 
     # Query logs from the last N seconds.
-    #
-    # Args:
-    # cursor: psycopg2 cursor
-    # window_seconds: how far back to query
-    #
-    # Returns:
-    # list of dicts with log data
 def query_window(cursor, window_seconds=60):
     cursor.execute("""
         SELECT timestamp, hostname, facility, severity,
@@ -79,15 +65,7 @@ def query_window(cursor, window_seconds=60):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-    # Insert a detected anomaly into the anomalies table.
-    #
-    # Args:
-    # cursor: psycopg2 cursor
-    # anomaly: dict with severity, description, anomaly_score, features
-    # window_seconds: size of the detection window (window_end - window_start)
-    #
-    # Returns:
-    # id of the inserted row
+    # Insert a detected anomaly. Returns the new row id.
 def insert_anomaly(cursor, anomaly, window_seconds=30):
     cursor.execute("""
         INSERT INTO anomalies (timestamp, window_start, window_end,
@@ -105,10 +83,7 @@ def insert_anomaly(cursor, anomaly, window_seconds=30):
     return cursor.fetchone()[0]
 
 
-    # Fold a repeat detection into an existing anomaly row.
-    #
-    # Refreshes window_end and records repeat_count/last_seen in features,
-    # so sustained attacks show as one row with "seen Nx" instead of clones.
+    # Merge a repeat detection into an existing anomaly row.
 def bump_anomaly(cursor, anomaly_id, repeat_count):
     cursor.execute("""
         UPDATE anomalies

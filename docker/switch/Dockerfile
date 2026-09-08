@@ -10,6 +10,6 @@ RUN chmod +x /setup-bridge.sh
 
 RUN touch /var/log/messages
 
-CMD /setup-bridge.sh && \
-    syslogd -R 172.20.0.10:514 && \
+CMD syslogd -R 172.20.0.10:514 && \
+	/setup-bridge.sh && \
     tail -f /var/log/messages

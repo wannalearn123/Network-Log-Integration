@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # Train Isolation Forest model on collected log data.
-#
-# Usage:
-# .venv/bin/python scripts/train_model.py [--window-minutes 30]
+# Usage: .venv/bin/python train/train_model.py [--window-minutes 30]
 
 import sys
 import pickle
@@ -10,7 +8,6 @@ import argparse
 import numpy as np
 from pathlib import Path
 
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.init import get_connection
@@ -32,7 +29,6 @@ FEATURE_NAMES = [
 ]
 
 
-    # Query all logs from the last N minutes.
 def query_all_logs(cursor, minutes):
     cursor.execute("""
         SELECT timestamp, hostname, facility, severity,
@@ -45,7 +41,6 @@ def query_all_logs(cursor, minutes):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-    # Split rows into fixed-size time windows.
 def split_into_windows(rows, window_seconds=60):
     if not rows:
         return []
@@ -143,6 +138,17 @@ def main():
     print(f"  Anomaly windows: {n_anomaly}")
     print(f"  Score range:     {scores.min():.4f} to {scores.max():.4f}")
 
+    # Data-driven severity cuts from the training score distribution.
+    anomaly_scores = np.clip(1.0 - (scores + 1.0) / 2.0, 0.0, 1.0)
+    t_med = float(round(float(np.quantile(anomaly_scores, 0.90)), 4))
+    t_high = float(round(float(np.quantile(anomaly_scores, 0.95)), 4))
+    t_crit = float(round(float(np.quantile(anomaly_scores, 0.99)), 4))
+    print(f"[TRAIN] Anomaly-score quantiles:")
+    print(f"  p50={float(np.quantile(anomaly_scores, 0.50)):.4f}"
+          f" p90={t_med:.4f} p95={t_high:.4f} p99={t_crit:.4f}")
+    print(f"[TRAIN] Severity cuts: MEDIUM>={t_med} HIGH>={t_high} CRITICAL>={t_crit}")
+    thresholds = {"medium": t_med, "high": t_high, "critical": t_crit}
+
     # 6. Save model bundle (classifier + scaler)
     import sklearn
 
@@ -154,6 +160,7 @@ def main():
     bundle = {
         "model": clf,
         "scaler": scaler,
+        "thresholds": thresholds,
         "feature_names": FEATURE_NAMES,
         "sklearn_version": sklearn.__version__,
         "trained_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

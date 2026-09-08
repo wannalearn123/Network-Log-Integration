@@ -21,38 +21,61 @@ iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "[ROUTER FORWARD]
 
 echo "[router] iptables rules applied"
 
-# Background: generate realistic router log events
+# Background: generate realistic router log events (Cisco IOS + MikroTik)
 (
     COUNTER=0
     while true; do
         COUNTER=$((COUNTER + 1))
+        BRAND=$((RANDOM % 2)) # 0=cisco, 1=mikrotik
 
         # Interface status reports
         for iface in $(ls /sys/class/net/ | grep -v lo); do
             STATE=$(cat /sys/class/net/$iface/operstate 2>/dev/null || echo "unknown")
             SPEED=$(cat /sys/class/net/$iface/speed 2>/dev/null || echo "N/A")
-            logger -t routerd "Interface $iface: state=$STATE speed=${SPEED}Mbps"
+            if [ "$BRAND" -eq 0 ]; then
+                logger -t ios "%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0 ($iface), changed state to $STATE"
+            else
+                logger -t interface "interface,info $iface link $STATE (speed ${SPEED}Mbps)"
+            fi
         done
 
         # Route table status
         ROUTES=$(ip route | wc -l)
-        logger -t routerd "Routing table: $ROUTES entries active"
+        NBR="172.20.0.$((1 + RANDOM % 20))"
+        if [ "$BRAND" -eq 0 ]; then
+            logger -t ios "%OSPF-5-ADJCHG: Process 1, Nbr $NBR on GigabitEthernet0/0 from LOADING to FULL ($ROUTES routes)"
+        else
+            logger -t route "route,info route added dst-address=172.20.100.0/24 gateway=$NBR ($ROUTES routes)"
+        fi
 
         # NAT connection tracking
         if [ -f /proc/net/nf_conntrack ]; then
             CONNS=$(wc -l < /proc/net/nf_conntrack 2>/dev/null || echo "0")
-            logger -t routerd "NAT conntrack: $CONNS active connections"
+            if [ "$BRAND" -eq 0 ]; then
+                logger -t routerd "NAT conntrack: $CONNS active connections"
+            else
+                logger -t firewall "firewall,info connection tracking: $CONNS entries"
+            fi
         fi
 
-        # Simulated DHCP lease events
+        # Simulated DHCP lease events (both map to dhcp_ack)
         if [ $((COUNTER % 5)) -eq 0 ]; then
             CLIENT_IP="172.20.100.$((1 + RANDOM % 50))"
-            logger -t dhcpd "DHCPACK on $CLIENT_IP to aa:bb:cc:$(printf '%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
+            MAC="aa:bb:cc:$(printf '%02x:%02x:%02x' $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))"
+            if [ "$BRAND" -eq 0 ]; then
+                logger -t dhcpd "DHCPACK to $CLIENT_IP ($MAC) via eth0"
+            else
+                logger -t dhcp "dhcp,info dhcp1 assigned $CLIENT_IP to $MAC"
+            fi
         fi
 
-        # Occasional route change events
+        # Occasional route change events (keep "route change" anchor)
         if [ $((COUNTER % 8)) -eq 0 ]; then
-            logger -t routerd "[ROUTE CHANGE] Default route metric adjusted"
+            if [ "$BRAND" -eq 0 ]; then
+                logger -t ios "%IP-5-ROUTE_CHANGE: Default route metric adjusted - route change"
+            else
+                logger -t route "route,info default route change gateway=$NBR"
+            fi
         fi
 
         sleep 15

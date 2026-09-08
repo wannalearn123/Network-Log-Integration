@@ -50,12 +50,9 @@ class NetworkMonitor(App):
 
     #search-bar {
         height: auto;
-        padding: 0 1;
-        margin-top: 1;
-    }
-
-    #search-bar {
         width: 100%;
+        padding: 0 1;
+        margin: 1 0;
     }
 
     #data-area {
@@ -79,11 +76,12 @@ class NetworkMonitor(App):
         Binding("q", "quit", "Quit"),
         Binding("p", "toggle_pause", "Pause/Resume", show=True),
         Binding("escape", "dismiss", "Close"),
+        Binding("tab", "focus_next", "Next", show=True, priority=True),
         Binding("slash", "focus_search", "Search", show=True),
     ]
 
     paused: reactive[bool] = reactive(False)
-    poll_interval = 2.0  # seconds
+    poll_interval = 1.0
     _last_stats: dict = {}
     _last_search: str = ""
 
@@ -102,8 +100,7 @@ class NetworkMonitor(App):
         self._search_bar = self.query_one("#search-bar", SearchBar)
         self.set_interval(self.poll_interval, self.refresh_data)
         self.refresh_data()
-        # Default focus: device log stream, not the anomaly panel.
-        # Deferred past autofocus so it wins the mount-time focus race.
+        # Defer focus to log stream past autofocus.
         self.call_after_refresh(self._focus_log_stream)
 
     def _focus_log_stream(self):
@@ -175,7 +172,6 @@ class NetworkMonitor(App):
         if self._search_bar.has_focus:
             self._search_bar.clear_search()
             self._search_bar.blur()
-
 
 if __name__ == "__main__":
     app = NetworkMonitor()

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-# Real-time log ingestion pipeline.
-#
-# Reads syslog from Docker containers, pipes through C collector,
-# and inserts parsed JSON into PostgreSQL.
+# Real-time log ingestion pipeline — reads syslog, pipes through C collector, inserts into PostgreSQL.
 
 import subprocess
 import threading
@@ -12,10 +9,7 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
-# Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pipeline.ingest import run_ingest
@@ -48,18 +42,15 @@ def tail_file(filepath, stdin_pipe):
                 time.sleep(TAIL_POLL_INTERVAL)
 
 
-    # Start the C collector as a subprocess.
 def start_collector():
     proc = subprocess.Popen(
         [COLLECTOR_BIN],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
     return proc
 
 
-    # Handle SIGINT/SIGTERM for graceful shutdown.
 def signal_handler(sig, frame):
     global running
     print("\n[SHUTDOWN] Stopping pipeline...", file=sys.stderr)
@@ -72,22 +63,27 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # 1. Find log files
+    # Find log files
     log_dir = Path("data/syslog")
     log_files = sorted(log_dir.glob("*.log"))
     if not log_files:
         print("[ERROR] No log files found in data/syslog/", file=sys.stderr)
         sys.exit(1)
 
+    # Exit if the collector binary is missing.
+    if not Path(COLLECTOR_BIN).exists():
+        print(f"[ERROR] Missing {COLLECTOR_BIN} — run: make -C collector", file=sys.stderr)
+        sys.exit(1)
+
     print(f"[INFO] Found {len(log_files)} log files:", file=sys.stderr)
     for f in log_files:
         print(f"[INFO]   - {f.name}", file=sys.stderr)
 
-    # 2. Start collector
+    # Start collector
     collector = start_collector()
     print("[INFO] C collector started", file=sys.stderr)
 
-    # 3. Start tail threads (feed into collector.stdin)
+    # Start tail threads
     tail_threads = []
     for log_file in log_files:
         t = threading.Thread(
@@ -98,7 +94,7 @@ def main():
         t.start()
         tail_threads.append(t)
 
-    # 4. Start ingest thread (reads from collector.stdout)
+    # Start ingest thread
     ingest_thread = threading.Thread(
         target=run_ingest,
         args=(collector.stdout,),
@@ -106,7 +102,7 @@ def main():
     )
     ingest_thread.start()
 
-    # 5. Start anomaly detector thread
+    # Start anomaly detector thread
     detector_thread = threading.Thread(
         target=start_detector,
         args=(30,),
@@ -115,19 +111,44 @@ def main():
     detector_thread.start()
     print("[INFO] Anomaly detector started", file=sys.stderr)
 
-    # 6. Wait for signal
+    # Watchdog: stop if any component dies.
     print("[INFO] Pipeline running — Ctrl+C to stop", file=sys.stderr)
+    failed = False
     while running:
+        if collector.poll() is not None:
+            print(f"[FATAL] C collector exited ({collector.returncode}) — stopping", file=sys.stderr)
+            running = False
+            failed = True
+            break
+        if not ingest_thread.is_alive():
+            print("[FATAL] Ingest thread died — stopping", file=sys.stderr)
+            running = False
+            failed = True
+            break
+        if not detector_thread.is_alive():
+            print("[FATAL] Detector thread died — stopping", file=sys.stderr)
+            running = False
+            failed = True
+            break
         time.sleep(1)
 
-    # 6. Cleanup
+    # Cleanup
     try:
         collector.stdin.close()
     except Exception:
         pass
-    collector.terminate()
-    collector.wait()
+    try:
+        if collector.poll() is None:
+            collector.terminate()
+        collector.wait(timeout=5)
+    except Exception:
+        try:
+            collector.kill()
+        except Exception:
+            pass
     print("[INFO] Pipeline stopped", file=sys.stderr)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

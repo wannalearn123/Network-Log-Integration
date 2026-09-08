@@ -8,6 +8,6 @@ RUN chmod +x /auth_sim.sh
 
 RUN touch /var/log/messages
 
-CMD /auth_sim.sh && \
-    syslogd -R 172.20.0.10:514 && \
-    tail -f /var/log/messages
+CMD syslogd -R 172.20.0.10:514 && \
+	/auth_sim.sh && \
+	tail -f /var/log/messages

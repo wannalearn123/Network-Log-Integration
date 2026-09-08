@@ -25,10 +25,7 @@ class SearchBar(Input):
             **kwargs,
         )
 
-        # Block focus during startup only, allow it afterward.
-        #
-        # Blur is deferred via set_timer to avoid reentrant
-        # focus/blur cycles inside the message handler.
+        # Defer blur to avoid reentrant focus cycles during startup.
     def on_focus(self):
         if self._startup_focus_block:
             self._startup_focus_block = False

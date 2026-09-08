@@ -1,7 +1,4 @@
-# ML-based anomaly detection engine.
-#
-# Uses Isolation Forest for unsupervised anomaly detection.
-# Detects statistical outliers that rules might miss.
+# ML-based anomaly detection engine — Isolation Forest for unsupervised outlier detection.
 
 import numpy as np
 import pickle
@@ -11,16 +8,7 @@ from pathlib import Path
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "isolation_forest.pkl"
 
 
-    # Extract a feature vector from log rows.
-    #
-    # Normalizes event names to uppercase so lowercase parser output
-    # (fw_block, fw_allow, scan_detected, ...) matches correctly.
-    #
-    # Args:
-    # rows: list of dicts from query_window()
-    #
-    # Returns:
-    # numpy array shape (1, 11)
+    # Extract 11-feature vector from log rows. Events normalized to uppercase.
 def extract_features(rows):
     total = len(rows) or 1
     ev = [(r.get("event") or "").upper() for r in rows]
@@ -37,20 +25,14 @@ def extract_features(rows):
         sum(1 for r in rows if r.get("proto") == "TCP") / total,     # tcp_ratio
         sum(1 for r in rows if r.get("proto") == "UDP") / total,     # udp_ratio
         sum(1 for r in rows if r.get("proto") == "ICMP") / total,    # icmp_ratio
-        sum(1 for r in rows if r.get("severity") == "HIGH") / total, # high_sev_ratio
+        sum(1 for r in rows                                         # high_sev_ratio
+            if (r.get("severity") or "").upper()
+            in ("EMERG", "ALERT", "CRIT", "ERR", "CRITICAL", "ERROR")) / total,
     ]])
 
 
-    # Load pre-trained Isolation Forest bundle from disk.
-    #
-    # Returns a dict {"model", "scaler", "sklearn_version", "trained_at"}
-    # (v2, scaled) or a bare IsolationForest (v1 legacy, unscaled).
-    # Falls back to None when no model file exists.
-    #
-    # The pickle is trusted local output of scripts/train_model.py —
-    # keep models/ writable only by the owner. Retrain with the same
-    # scikit-learn version after upgrading it; cross-version unpickling
-    # may fail.
+    # Load pre-trained Isolation Forest bundle from disk. Returns dict or None.
+    # Retrain with matching sklearn version after upgrades.
 def load_model():
     import sklearn
 
@@ -63,29 +45,20 @@ def load_model():
     return None
 
 
-    # Split a v2 bundle into (clf, scaler) or legacy (clf, None).
+    # Split a v2 bundle into (clf, scaler, thresholds).
+    # thresholds is None for legacy bundles without quantile cuts.
 def _unpack_bundle(model):
     if isinstance(model, dict) and "model" in model:
-        return model["model"], model.get("scaler")
-    return model, None
+        return model["model"], model.get("scaler"), model.get("thresholds")
+    return model, None, None
 
 
-    # Run Isolation Forest prediction.
-    #
-    # Accepts a v2 bundle (scales features first) or a legacy v1
-    # bare classifier (features used as-is).
-    #
-    # Args:
-    # features: numpy array shape (1, 11)
-    # model: bundle dict, loaded IsolationForest, or None
-    #
-    # Returns:
-    # (anomaly_score: float 0.0-1.0, severity: str)
+    # Run Isolation Forest prediction. Returns (anomaly_score 0.0–1.0, severity).
 def detect_ml(features, model):
     if model is None:
         return 0.0, "LOW"
 
-    clf, scaler = _unpack_bundle(model)
+    clf, scaler, thresholds = _unpack_bundle(model)
     if scaler is not None:
         features = scaler.transform(features)
 
@@ -93,11 +66,18 @@ def detect_ml(features, model):
     anomaly_score = float(round(1.0 - (raw_score + 1.0) / 2.0, 4))
     anomaly_score = max(0.0, min(1.0, anomaly_score))
 
-    if anomaly_score > 0.85:
+    if thresholds:
+        t_crit = float(thresholds.get("critical", 0.85))
+        t_high = float(thresholds.get("high", 0.7))
+        t_med = float(thresholds.get("medium", 0.5))
+    else:
+        t_crit, t_high, t_med = 0.85, 0.7, 0.5
+
+    if anomaly_score >= t_crit:
         severity = "CRITICAL"
-    elif anomaly_score > 0.7:
+    elif anomaly_score >= t_high:
         severity = "HIGH"
-    elif anomaly_score > 0.5:
+    elif anomaly_score >= t_med:
         severity = "MEDIUM"
     else:
         severity = "LOW"
