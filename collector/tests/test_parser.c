@@ -145,7 +145,7 @@ void test_to_json_escaping(void) {
     snprintf(entry.device_type, sizeof(entry.device_type), "other");
     snprintf(entry.event, sizeof(entry.event), "unknown");
     entry.dst_port = -1;
-    snprintf(entry.raw_line, sizeof(entry.raw_line), "raw");
+    entry.raw_line = "raw";
 
     char* json = to_json(&entry);
     if (!json) { FAIL("to_json returned NULL"); return; }

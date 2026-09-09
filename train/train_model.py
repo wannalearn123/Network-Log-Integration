@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from db.init import get_connection
-from pipeline.ml_engine import MODEL_PATH, extract_features
+from pipeline.ml_engine import MODEL_PATH, WINDOW_SECONDS, extract_features
 
 
 FEATURE_NAMES = [
@@ -41,7 +41,7 @@ def query_all_logs(cursor, minutes):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
-def split_into_windows(rows, window_seconds=60):
+def split_into_windows(rows, window_seconds=WINDOW_SECONDS):
     if not rows:
         return []
 
@@ -71,8 +71,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train Isolation Forest on log data")
     parser.add_argument("--window-minutes", type=int, default=30,
                         help="How many minutes of data to use (default: 30)")
-    parser.add_argument("--window-seconds", type=int, default=60,
-                        help="Window size in seconds (default: 60)")
+    parser.add_argument("--window-seconds", type=int, default=WINDOW_SECONDS,
+                        help=f"Window size in seconds (default: {WINDOW_SECONDS}, must match detector)")
     parser.add_argument("--contamination", type=float, default=0.1,
                         help="Expected anomaly ratio (default: 0.1)")
     args = parser.parse_args()

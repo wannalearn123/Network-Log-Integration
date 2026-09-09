@@ -1,13 +1,19 @@
 import os
+from pathlib import Path
 
 import psycopg2
 from psycopg2.extras import execute_values
+from dotenv import load_dotenv
+
+# Load project .env once so every entrypoint (orchestrator, train, tui)
+# picks up PG* without relying on caller to call load_dotenv first.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
     # Connect to PostgreSQL with env-based credentials, falling back to defaults.
 def get_connection():
     return psycopg2.connect(
-        host=os.environ.get("PGHOST", "172.20.0.20"),
+        host=os.environ.get("PGHOST", "localhost"),
         port=int(os.environ.get("PGPORT", "5432")),
         database=os.environ.get("PGDATABASE", "network_logs"),
         user=os.environ.get("PGUSER", "monitor"),

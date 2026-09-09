@@ -10,9 +10,10 @@ log_entry_t* parse_syslog_line(const char* line) {
     log_entry_t* entry = calloc(1, sizeof(log_entry_t));
     if (!entry) return NULL;
 
-    strncpy(entry->raw_line, line, sizeof(entry->raw_line) - 1);
-    entry->raw_line[sizeof(entry->raw_line) - 1] = '\0';
-    int len = strlen(entry->raw_line);
+    size_t len = strlen(line);
+    entry->raw_line = malloc(len + 1);
+    if (!entry->raw_line) { free(entry); return NULL; }
+    memcpy(entry->raw_line, line, len + 1);
     while (len > 0 && (entry->raw_line[len-1] == '\n' || entry->raw_line[len-1] == '\r')) {
         entry->raw_line[--len] = '\0';
     }
@@ -31,5 +32,7 @@ log_entry_t* parse_syslog_line(const char* line) {
 }
 
 void free_entry(log_entry_t* entry) {
+    if (!entry) return;
+    free(entry->raw_line);
     free(entry);
 }

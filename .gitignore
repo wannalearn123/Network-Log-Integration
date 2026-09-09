@@ -1,4 +1,4 @@
-# Secrets — .env holds NVIDIA_API_KEY + PG creds, never commit
+# Secrets — .env holds PG creds, never commit
 .env
 
 # Python — venv, bytecode, tooling

@@ -14,7 +14,7 @@ typedef struct {
     char dst_ip[46];
     char proto[8];
     int  dst_port;
-    char raw_line[2048];
+    char *raw_line; /* heap-allocated full line, never truncated (1MB cap in collector) */
 } log_entry_t;
 
 #include "syslog.h"

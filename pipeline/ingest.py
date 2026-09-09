@@ -1,4 +1,5 @@
 import json
+import os
 import select
 import sys
 import time
@@ -10,8 +11,8 @@ from db.init import get_connection, insert_log_batch, insert_log_entry
 import psycopg2
 
 
-BATCH_SIZE = 5
-FLUSH_INTERVAL = 5  # seconds
+FLUSH_INTERVAL = 1.0  # seconds — batch is dynamic, bounded by time only
+MAX_BATCH = 10000  # safety cap: drop oldest on backpressure, never grow unbounded
 
 running = True
 
@@ -34,6 +35,7 @@ def run_ingest(collector_stdout):
     cursor = conn.cursor()
     batch = []
     total = 0
+    dropped = 0
     last_flush = time.monotonic()
 
     print("[INGEST] Connected to PostgreSQL", file=sys.stderr)
@@ -41,7 +43,7 @@ def run_ingest(collector_stdout):
         # Flush batch; on failure retry row-by-row and skip poison rows.
         # Connection errors are re-raised so the watchdog stops the pipeline.
     def flush_batch():
-        nonlocal total, last_flush
+        nonlocal total, dropped, last_flush
         if not batch:
             last_flush = time.monotonic()
             return
@@ -94,6 +96,31 @@ def run_ingest(collector_stdout):
 
     running = True
     fd = collector_stdout.fileno()
+    buf = bytearray()
+    bytes_read = 0
+    partial_waits = 0
+    malformed = 0
+
+    def handle_line(raw_line):
+        nonlocal dropped, malformed
+        line = raw_line.strip()
+        if not line:
+            return
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            if malformed == 1 or malformed % 100 == 0:
+                print(f"[INGEST] Skipped malformed JSON line (total {malformed})",
+                      file=sys.stderr)
+            return
+        if len(batch) >= MAX_BATCH:
+            del batch[0]
+            dropped += 1
+            if dropped == 1 or dropped % 1000 == 0:
+                print(f"[INGEST] Backpressure: dropped {dropped} oldest rows",
+                      file=sys.stderr)
+        batch.append(entry)
 
     while running:
         try:
@@ -102,29 +129,39 @@ def run_ingest(collector_stdout):
             break
 
         if ready:
-            raw = collector_stdout.readline()
-            if not raw:  # EOF — collector closed stdout
-                break
-            line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else raw.strip()
-            if not line:
-                continue
-
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+                chunk = os.read(fd, 65536)
+            except OSError:
+                break
+            if not chunk:  # EOF — collector closed stdout
+                if buf:
+                    handle_line(bytes(buf).decode("utf-8", errors="replace"))
+                    buf.clear()
+                break
+            bytes_read += len(chunk)
+            buf.extend(chunk)
+            # Emit only complete lines; half-line stays buffered
+            while True:
+                nl = buf.find(b"\n")
+                if nl < 0:
+                    break
+                raw = bytes(buf[:nl])
+                del buf[:nl + 1]
+                handle_line(raw.decode("utf-8", errors="replace"))
+            if buf:
+                # Data arrived but no full line yet — don't block, re-loop
+                partial_waits += 1
+        # else: select timeout — running re-checked at loop top for fast shutdown
 
-            batch.append(entry)
-            if len(batch) >= BATCH_SIZE:
-                flush_batch()
-        else:
-            # No data — flush stale partial batch
-            if batch and (time.monotonic() - last_flush) >= FLUSH_INTERVAL:
-                flush_batch()
+        # Time-bounded flush — runs on data and idle paths alike
+        if batch and (time.monotonic() - last_flush) >= FLUSH_INTERVAL:
+            flush_batch()
 
     # Flush remaining
     flush_batch()
 
-    print(f"[INGEST] Done — {total} total entries", file=sys.stderr)
+    print(f"[INGEST] Done — {total} total entries, {dropped} dropped on backpressure, "
+          f"{malformed} malformed, {bytes_read} bytes, {partial_waits} partial waits",
+          file=sys.stderr)
     cursor.close()
     conn.close()

@@ -7,6 +7,10 @@ from pathlib import Path
 
 MODEL_PATH = Path(__file__).resolve().parent / "models" / "isolation_forest.pkl"
 
+# Single source of truth for feature window. Detector and trainer must use this.
+# Train distribution == serve distribution; never let the two defaults drift.
+WINDOW_SECONDS = 30
+
 
     # Extract 11-feature vector from log rows. Events normalized to uppercase.
 def extract_features(rows):
@@ -32,17 +36,34 @@ def extract_features(rows):
 
 
     # Load pre-trained Isolation Forest bundle from disk. Returns dict or None.
+    # If expected_window_seconds is given and the bundle was trained on a
+    # different window, refuse it (return None) instead of scoring skewed.
     # Retrain with matching sklearn version after upgrades.
-def load_model():
+def load_model(expected_window_seconds=None):
     import sklearn
 
-    if MODEL_PATH.exists():
-        st = MODEL_PATH.stat()
-        print(f"[ML] Loading model ({st.st_size} bytes, sklearn {sklearn.__version__})",
-              file=sys.stderr)
-        with open(MODEL_PATH, "rb") as f:
-            return pickle.load(f)
-    return None
+    if not MODEL_PATH.exists():
+        return None
+    st = MODEL_PATH.stat()
+    print(f"[ML] Loading model ({st.st_size} bytes, sklearn {sklearn.__version__})",
+          file=sys.stderr)
+    with open(MODEL_PATH, "rb") as f:
+        bundle = pickle.load(f)
+
+    if isinstance(bundle, dict):
+        trained_window = bundle.get("window_seconds")
+        if (expected_window_seconds is not None
+                and trained_window is not None
+                and int(trained_window) != int(expected_window_seconds)):
+            print(f"[ML] Window mismatch: model trained on {trained_window}s, "
+                  f"detector uses {expected_window_seconds}s — ML disabled, retrain with "
+                  f"--window-seconds {expected_window_seconds}", file=sys.stderr)
+            return None
+        saved_sklearn = bundle.get("sklearn_version")
+        if saved_sklearn and saved_sklearn != sklearn.__version__:
+            print(f"[ML] sklearn version mismatch: model={saved_sklearn} runtime={sklearn.__version__} "
+                  f"— continuing, retrain recommended", file=sys.stderr)
+    return bundle
 
 
     # Split a v2 bundle into (clf, scaler, thresholds).

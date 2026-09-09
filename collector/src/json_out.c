@@ -45,16 +45,19 @@ static char* json_write_escaped(char* dst, const char* s) {
 
 char* to_json(const log_entry_t* entry) {
     if (!entry) return NULL;
+    const char *raw = entry->raw_line ? entry->raw_line : "";
 
-    // Single allocation: fixed overhead + worst-case escaped lengths, capped at 64KB.
+    // Single allocation: fixed overhead + worst-case escaped lengths, capped at 8MB
+    // (1MB line * 6x \uXXXX escaping + overhead). Larger lines are dropped, counted upstream.
     size_t need = 256
         + json_escaped_len(entry->timestamp) + json_escaped_len(entry->hostname)
         + json_escaped_len(entry->facility) + json_escaped_len(entry->severity)
         + json_escaped_len(entry->device_type) + json_escaped_len(entry->event)
         + json_escaped_len(entry->src_ip) + json_escaped_len(entry->dst_ip)
         + json_escaped_len(entry->proto) + 16 /* dst_port */
-        + json_escaped_len(entry->raw_line) + 32;
-    if (need > 65536) {
+        + json_escaped_len(raw) + 32;
+    if (need > 8 * 1024 * 1024) {
+        fprintf(stderr, "collector: JSON over 8MB, dropping line\n");
         return NULL;
     }
 
@@ -108,7 +111,7 @@ char* to_json(const log_entry_t* entry) {
 
     APPEND_FMT("%s", ",");
     APPEND_FMT("\"raw_line\":\"%s", "");
-    p = json_write_escaped(p, entry->raw_line);
+    p = json_write_escaped(p, raw);
     if (p >= end) { free(buf); return NULL; }
     APPEND_FMT("%s", "\"}");
 

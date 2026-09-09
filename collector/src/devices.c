@@ -217,10 +217,12 @@ static void extract_proto_generic(const char *msg, const char *low,
 
 void extract_fields(log_entry_t* entry) {
     const char* msg = entry->raw_line;
-    if (!msg[0]) return;
+    if (!msg || !msg[0]) return;
 
-    char low[2048];
-    to_lower_copy(msg, low, sizeof(low));
+    size_t msg_len = strlen(msg);
+    char *low = malloc(msg_len + 1);
+    if (!low) return;
+    to_lower_copy(msg, low, msg_len + 1);
 
     entry->dst_port = -1;
 
@@ -343,6 +345,7 @@ void extract_fields(log_entry_t* entry) {
 
     if (ev) {
         snprintf(entry->event, sizeof(entry->event), "%s", ev);
+        free(low);
         return;
     }
 
@@ -357,4 +360,5 @@ void extract_fields(log_entry_t* entry) {
         snprintf(entry->event, sizeof(entry->event), "ap_event");
     else
         snprintf(entry->event, sizeof(entry->event), "unknown");
+    free(low);
 }
