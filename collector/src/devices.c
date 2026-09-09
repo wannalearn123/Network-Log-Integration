@@ -291,10 +291,15 @@ void extract_fields(log_entry_t* entry) {
     else if (contains_ci(low, "brute force"))
         ev = "brute_force";
     else if (contains_ci(low, "ddos") || contains_ci(low, "syn flood"))
-        ev = "scan_detected";
-    else if (contains_ci(low, "arp spoof") || contains_ci(low, "dns spoof") ||
-             contains_ci(low, "rogue dhcp") || contains_ci(low, "vlan hop"))
-        ev = "scan_detected";
+        ev = "ddos_flood";
+    else if (contains_ci(low, "arp spoof"))
+        ev = "arp_spoof";
+    else if (contains_ci(low, "dns spoof"))
+        ev = "dns_spoof";
+    else if (contains_ci(low, "rogue dhcp"))
+        ev = "rogue_dhcp";
+    else if (contains_ci(low, "vlan hop"))
+        ev = "vlan_hop";
     else if (contains_ci(low, "ap-sta-failed") || contains_ci(low, "invalid_auth") ||
              contains_ci(low, "authentication error") || contains_ci(low, "handshake failed") ||
              (contains_ci(low, "failed") && contains_ci(low, "auth")))

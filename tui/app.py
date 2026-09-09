@@ -121,7 +121,14 @@ class NetworkMonitor(App):
 
             search = self._search_bar.search_text.strip()
             self._last_search = search
-            like = f"%{search}%" if search else None
+            # Escape LIKE wildcards so user input is treated literally.
+            # With ESCAPE '\\' in SQL: \% = literal %, \_ = literal _
+            if search:
+                like = "%" + search.replace("\\", "\\\\") \
+                                   .replace("%", "\\%") \
+                                   .replace("_", "\\_") + "%"
+            else:
+                like = None
 
             if like:
                 cur.execute(SQL_LOGS_SEARCH, (like, like, like, like, like, like))

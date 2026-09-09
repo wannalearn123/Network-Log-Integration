@@ -19,9 +19,21 @@ INSERT_COOLDOWN = 300  # seconds before inserting a new row for the same per-IP 
 INSERT_COOLDOWN_FLOOD = 60  # shorter cooldown for aggregate FLOOD / HIGH_DROP_RATE
 
 SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+MAX_COOLDOWN = max(INSERT_COOLDOWN, INSERT_COOLDOWN_FLOOD)  # 300s
 
 running = True
 _last_insert = {}  # (rule-signature) -> (anomaly_id, repeat_count, monotonic timestamp)
+
+
+    # Remove stale entries to prevent unbounded memory growth.
+def _prune_last_insert():
+    now = time.monotonic()
+    stale = [k for k, v in _last_insert.items() if (now - v[2]) > MAX_COOLDOWN]
+    for k in stale:
+        del _last_insert[k]
+    if stale:
+        print(f"[DETECTOR] Pruned {len(stale)} stale cooldown entries "
+              f"({len(_last_insert)} remaining)", file=sys.stderr)
 
 
     # Build a hashable key so repeats of the same attack merge.
@@ -105,6 +117,7 @@ def start_detector(interval=WINDOW_INTERVAL):
     cursor = conn.cursor()
 
     while running:
+        _prune_last_insert()  # prevent unbounded _last_insert growth
         try:
             # 1. Query the last WINDOW_SIZE seconds of logs
             rows = query_window(cursor, WINDOW_SIZE)
@@ -131,7 +144,11 @@ def start_detector(interval=WINDOW_INTERVAL):
                 if prev is not None and (now - prev[2]) < cooldown:
                     anomaly_id, count, _ = prev
                     bump_anomaly(cursor, anomaly_id, count + 1)
-                    conn.commit()
+                    try:
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
                     _last_insert[key] = (anomaly_id, count + 1, now)
                     print(
                         f"[DETECTOR] Repeat [{anomaly['severity']}] "
@@ -140,7 +157,11 @@ def start_detector(interval=WINDOW_INTERVAL):
                     )
                 else:
                     anomaly_id = insert_anomaly(cursor, anomaly, window_seconds=WINDOW_SIZE)
-                    conn.commit()
+                    try:
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
                     _last_insert[key] = (anomaly_id, 1, now)
                     print(
                         f"[DETECTOR] Anomaly [{anomaly['severity']}]: "

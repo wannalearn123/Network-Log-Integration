@@ -20,6 +20,7 @@ static const char* facility_name(int num) {
         case 9: return "cron";
         case 10: return "authpriv";
         case 11: return "ftp";
+        case 12: return "ntp";
         case 13: return "security";
         case 14: return "console";
         case 15: return "solaris-cron";

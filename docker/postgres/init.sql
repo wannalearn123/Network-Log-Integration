@@ -43,6 +43,7 @@ CREATE INDEX idx_logs_device_type   ON logs (device_type);
 CREATE INDEX idx_logs_severity      ON logs (severity);
 CREATE INDEX idx_logs_event         ON logs (event);
 CREATE INDEX idx_logs_src_ip        ON logs (src_ip);
+CREATE INDEX idx_logs_dst_ip        ON logs (dst_ip);
 
 CREATE INDEX idx_anomalies_timestamp ON anomalies (timestamp);
 CREATE INDEX idx_anomalies_severity  ON anomalies (severity);

@@ -19,6 +19,6 @@ collector/test_parser
 collector/src/*.o
 test_parser
 
-# Trained model — 800KB+ binary, reproducible via scripts/train_model.py
+# Trained model — 800KB+ binary, reproducible via train/train_model.py
 pipeline/models/*.pkl
 

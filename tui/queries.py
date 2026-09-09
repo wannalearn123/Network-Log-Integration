@@ -12,12 +12,12 @@ SQL_LOGS_SEARCH = """
 SELECT timestamp, hostname, device_type, event,
        src_ip, dst_ip, proto, dst_port
 FROM logs
-WHERE hostname ILIKE %s
-   OR device_type ILIKE %s
-   OR event ILIKE %s
-   OR src_ip::text ILIKE %s
-   OR dst_ip::text ILIKE %s
-   OR proto ILIKE %s
+WHERE hostname ILIKE %s ESCAPE '\\'
+   OR device_type ILIKE %s ESCAPE '\\'
+   OR event ILIKE %s ESCAPE '\\'
+   OR src_ip::text ILIKE %s ESCAPE '\\'
+   OR dst_ip::text ILIKE %s ESCAPE '\\'
+   OR proto ILIKE %s ESCAPE '\\'
 ORDER BY timestamp DESC
 LIMIT 80
 """
@@ -32,8 +32,8 @@ LIMIT 30
 SQL_ANOMALIES_SEARCH = """
 SELECT id, timestamp, severity, anomaly_score, description
 FROM anomalies
-WHERE description ILIKE %s
-   OR severity ILIKE %s
+WHERE description ILIKE %s ESCAPE '\\'
+   OR severity ILIKE %s ESCAPE '\\'
 ORDER BY timestamp DESC
 LIMIT 30
 """

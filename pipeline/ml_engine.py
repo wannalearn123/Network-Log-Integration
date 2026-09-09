@@ -83,8 +83,14 @@ def detect_ml(features, model):
     if scaler is not None:
         features = scaler.transform(features)
 
-    raw_score = clf.decision_function(features)[0]  # typically -1.0 to 1.0
-    anomaly_score = float(round(1.0 - (raw_score + 1.0) / 2.0, 4))
+    raw_score = clf.decision_function(features)[0]
+
+    # Sigmoid normalization with steepness k=5: maps any decision_function
+    # range to (0, 1). k=5 provides good separation between normal (~0.85)
+    # and anomalous (~0.1-0.3) scores. Quantile-based thresholds from
+    # training ensure correct severity cuts regardless of score range.
+    import math
+    anomaly_score = float(round(1.0 / (1.0 + math.exp(-5.0 * raw_score)), 4))
     anomaly_score = max(0.0, min(1.0, anomaly_score))
 
     if thresholds:
