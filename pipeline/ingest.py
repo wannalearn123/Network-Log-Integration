@@ -3,6 +3,7 @@ import os
 import select
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -35,7 +36,7 @@ def run_ingest(collector_stdout):
 
     try:
         cursor = conn.cursor()
-        batch = []
+        batch = deque(maxlen=MAX_BATCH)
         total = 0
         dropped = 0
         last_flush = time.monotonic()
@@ -116,8 +117,7 @@ def run_ingest(collector_stdout):
                     print(f"[INGEST] Skipped malformed JSON line (total {malformed})",
                           file=sys.stderr)
                 return
-            if len(batch) >= MAX_BATCH:
-                del batch[0]
+            if len(batch) == MAX_BATCH:
                 dropped += 1
                 if dropped == 1 or dropped % 1000 == 0:
                     print(f"[INGEST] Backpressure: dropped {dropped} oldest rows",
