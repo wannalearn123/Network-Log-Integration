@@ -28,6 +28,7 @@ from tui.queries import (
 )
 from tui.widgets.log_stream import LogStream
 from tui.widgets.anomaly_panel import AnomalyPanel
+from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen
 from tui.widgets.stats_bar import StatsBar
 from tui.widgets.search_bar import SearchBar
 
@@ -84,6 +85,7 @@ class NetworkMonitor(App):
     poll_interval = 1.0
     _last_stats: dict = {}
     _last_search: str = ""
+    _pause_before_modal: bool = False
 
     def compose(self) -> ComposeResult:
         yield StatsBar(id="status-bar")
@@ -108,6 +110,31 @@ class NetworkMonitor(App):
 
     def action_focus_search(self):
         self._search_bar.focus()
+
+        # Open a detail modal over the selected table row and pause the feed.
+    def _open_detail(self, screen):
+        self._pause_before_modal = self.paused
+        self.paused = True
+        self._status_bar.update_stats(self._last_stats, paused=True)
+        self.push_screen(screen, callback=self._close_detail)
+
+        # Resume the feed when the detail modal is dismissed.
+    def _close_detail(self, _result=None):
+        self.paused = self._pause_before_modal
+        self._status_bar.update_stats(self._last_stats, paused=self.paused)
+        self.refresh_data()
+
+        # Enter/click on a log or anomaly row opens its detail card.
+    def on_data_table_row_selected(self, event):
+        idx = event.cursor_row
+        if event.control.id == "log-stream":
+            rows = self._log_table._rows
+            if 0 <= idx < len(rows):
+                self._open_detail(LogDetailScreen(rows[idx]))
+        elif event.control.id == "anomaly-panel":
+            rows = self._anom_table._rows
+            if 0 <= idx < len(rows):
+                self._open_detail(AnomalyDetailScreen(rows[idx]))
 
         # Poll database and update all widgets.
     def refresh_data(self):

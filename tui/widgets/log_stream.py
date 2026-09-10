@@ -6,6 +6,10 @@ from textual.widgets import DataTable
     # Live log stream table showing recent parsed logs.
 class LogStream(DataTable):
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._rows: list[dict] = []
+
     def on_mount(self):
         self.add_columns(
             "Time", "Device", "Type", "Event",
@@ -16,7 +20,8 @@ class LogStream(DataTable):
         # Replace all rows with new data from query results.
     def populate(self, rows: list):
         self.clear()
-        for row in rows:
+        self._rows.clear()
+        for i, row in enumerate(rows):
             ts = row[0].strftime("%H:%M:%S") if row[0] else ""
             hostname = row[1] or ""
             device = row[2] or ""
@@ -25,4 +30,13 @@ class LogStream(DataTable):
             dst_ip = str(row[5]) if row[5] else ""
             proto = row[6] or ""
             port = str(row[7]) if row[7] else ""
-            self.add_row(ts, hostname, device, event, src_ip, dst_ip, proto, port)
+            self.add_row(ts, hostname, device, event, src_ip, dst_ip, proto, port,
+                         key=f"log-{i}")
+            self._rows.append({
+                "time": row[0].strftime("%Y-%m-%d %H:%M:%S") if row[0] else "",
+                "device": hostname,
+                "src_ip": src_ip,
+                "dst_ip": dst_ip,
+                "proto": proto,
+                "port": port,
+            })

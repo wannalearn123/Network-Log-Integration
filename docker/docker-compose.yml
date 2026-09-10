@@ -16,6 +16,8 @@ services:
     ports:
       - "5140:514/tcp"
       - "5140:514/udp"
+      - "514:514/tcp"
+      - "514:514/udp"
     volumes:
       - ../data/syslog:/var/log/remote
     healthcheck:
