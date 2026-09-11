@@ -35,7 +35,7 @@ echo "[router] iptables rules applied"
             if [ "$BRAND" -eq 0 ]; then
                 logger -t ios "%LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0 ($iface), changed state to $STATE"
             else
-                logger -t interface "interface,info $iface link $STATE (speed ${SPEED}Mbps)"
+                logger -t interface "interface,info $iface link $STATE"
             fi
         done
 
@@ -65,7 +65,7 @@ echo "[router] iptables rules applied"
             if [ "$BRAND" -eq 0 ]; then
                 logger -t dhcpd "DHCPACK to $CLIENT_IP ($MAC) via eth0"
             else
-                logger -t dhcp "dhcp,info dhcp1 assigned $CLIENT_IP to $MAC"
+                logger -t dhcp "dhcp,info defconf assigned $CLIENT_IP to $MAC"
             fi
         fi
 

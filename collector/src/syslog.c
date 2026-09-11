@@ -84,7 +84,8 @@ void parse_timestamp(log_entry_t* entry, const char** cursor) {
         }
         entry->timestamp[i] = '\0';
     } else if (isalpha((unsigned char)*p)) {
-        // Traditional MMM DD HH:MM:SS — normalize to ISO with current year.
+        // Traditional MMM DD HH:MM:SS or MikroTik MMM/DD HH:MM:SS
+        // — normalize to ISO with current year.
         char mon[4] = "";
         int day = 0, hh = 0, mm = 0, ss = 0;
         int month = 0;
@@ -93,6 +94,13 @@ void parse_timestamp(log_entry_t* entry, const char** cursor) {
             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         };
         if (sscanf(p, "%3s %d %d:%d:%d", mon, &day, &hh, &mm, &ss) == 5) {
+            for (int m = 0; m < 12; m++) {
+                if (strcmp(mon, names[m]) == 0) {
+                    month = m + 1;
+                    break;
+                }
+            }
+        } else if (sscanf(p, "%3s/%d %d:%d:%d", mon, &day, &hh, &mm, &ss) == 5) {
             for (int m = 0; m < 12; m++) {
                 if (strcmp(mon, names[m]) == 0) {
                     month = m + 1;
