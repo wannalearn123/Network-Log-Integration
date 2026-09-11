@@ -292,14 +292,6 @@ void extract_fields(log_entry_t* entry) {
         ev = "brute_force";
     else if (contains_ci(low, "ddos") || contains_ci(low, "syn flood"))
         ev = "ddos_flood";
-    else if (contains_ci(low, "arp spoof"))
-        ev = "arp_spoof";
-    else if (contains_ci(low, "dns spoof"))
-        ev = "dns_spoof";
-    else if (contains_ci(low, "rogue dhcp"))
-        ev = "rogue_dhcp";
-    else if (contains_ci(low, "vlan hop"))
-        ev = "vlan_hop";
     else if (contains_ci(low, "ap-sta-failed") || contains_ci(low, "invalid_auth") ||
              contains_ci(low, "authentication error") || contains_ci(low, "handshake failed") ||
              (contains_ci(low, "failed") && contains_ci(low, "auth")))
@@ -322,6 +314,14 @@ void extract_fields(log_entry_t* entry) {
         ev = "mac_flap";
     else if (contains_ci(low, "mac learn") || contains_ci(low, "learned"))
         ev = "mac_learn";
+    // CEF action-based classification (FortiGate traffic logs).
+    // Placed before generic keyword matches to avoid false positives
+    // from CEF header fields like "cat=traffic:forward".
+    else if (contains_ci(low, "act=close") || contains_ci(low, "act=accept"))
+        ev = "fw_allow";
+    else if (contains_ci(low, "act=deny") || contains_ci(low, "act=drop") ||
+             contains_ci(low, "act=reject"))
+        ev = "fw_block";
     else if (contains_ci(low, "block") || contains_ci(low, "drop") ||
              contains_ci(low, "deny"))
         ev = "fw_block";
@@ -344,8 +344,7 @@ void extract_fields(log_entry_t* entry) {
         ev = "nat_conntrack";
     else if (contains_ci(low, "masquerad") || (contains_ci(low, "nat") && !contains_ci(low, "donat")))
         ev = "nat_event";
-    else if (contains_ci(low, "router input") || contains_ci(low, "router forward") ||
-             contains_ci(low, "forward"))
+    else if (contains_ci(low, "router input") || contains_ci(low, "router forward"))
         ev = "packet_log";
 
     if (ev) {

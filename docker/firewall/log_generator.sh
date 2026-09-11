@@ -40,14 +40,18 @@ ATTACKER_IP="172.20.0.50"
             # iptables/nftables kernel form (SRC=/DPT=)
             logger -t kernel "[FW $ACTION] IN=eth0 OUT= SRC=$SRC DST=172.20.0.4 PROTO=$PROTO SPT=$SPT DPT=$DST_PORT"
         else
-            # FortiGate FortiOS form (srcip=/dstport=, proto number)
+            # FortiGate CEF traffic log (real format)
             case "$PROTO" in
                 TCP) PNUM=6;; UDP) PNUM=17;; *) PNUM=1;;
             esac
             case "$ACTION" in
-                ALLOW) FACT=accept;; DROP) FACT=deny;; *) FACT=deny;;
+                ALLOW) ACT=close; ACT_TEXT="allow";;
+                DROP)  ACT=deny;  ACT_TEXT="deny";;
+                *)     ACT=deny;  ACT_TEXT="deny";;
             esac
-            logger -t fortigate "date=2026-09-08 devname=FG100F action=$FACT srcip=$SRC dstip=172.20.0.4 proto=$PNUM dstport=$DST_PORT policyid=1"
+            LOGID=$(printf '%010d' $COUNTER)
+            DEVID=$(printf '%012d' $((COUNTER + RANDOM % 10000)))
+            logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward $ACT_TEXT|3|deviceExternalId=FGT100F$DEVID FTNTFGTlogid=$LOGID cat=traffic:forward src=$SRC dst=172.20.0.4 spt=$SPT dpt=$DST_PORT proto=$PNUM act=$ACT"
         fi
 
         # NAT events
@@ -81,7 +85,8 @@ ATTACKER_IP="172.20.0.50"
                 if [ $((RANDOM % 2)) -eq 0 ]; then
                     logger -t kernel "[FW BLOCK SCAN] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 PROTO=TCP SPT=$SCAN_SPT DPT=$SCAN_PORT"
                 else
-                    logger -t fortigate "date=2026-09-08 devname=FG100F action=deny srcip=$ATTACKER_IP dstip=172.20.0.4 proto=6 dstport=$SCAN_PORT policyid=1 scan detected"
+                    SCAN_SPT2=$((1024 + RANDOM % 60000))
+                    logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00013|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$SCAN_SPT2 dpt=$SCAN_PORT proto=6 act=deny"
                 fi
             done
 

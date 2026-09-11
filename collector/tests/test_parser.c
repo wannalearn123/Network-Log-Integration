@@ -336,7 +336,7 @@ void test_brand_ruijie_auth(void) {
 }
 
 void test_brand_fortigate(void) {
-    TEST("Brand FortiGate deny");
+    TEST("Brand FortiGate deny (simplified)");
     const char* line = "2026-08-31T08:16:26+00:00 firewall.docker_building-lan fortigate: date=2026-09-08 devname=FG100F action=deny srcip=172.20.0.50 dstip=172.20.0.4 proto=6 dstport=22 policyid=1";
     log_entry_t* entry = parse_syslog_line(line);
     if (!entry) { FAIL("returned NULL"); return; }
@@ -350,6 +350,59 @@ void test_brand_fortigate(void) {
         { FAIL("proto should be TCP"); free_entry(entry); return; }
     if (entry->dst_port != 22)
         { FAIL("dst_port should be 22"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+void test_fortigate_cef_close(void) {
+    TEST("FortiGate CEF act=close");
+    const char* line = "2026-09-08T11:07:55+00:00 FGT-A-LOG fortigate: CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward close|3|deviceExternalId=FGT100F0000000001 FTNTFGTlogid=0001000013 cat=traffic:forward src=10.1.100.11 spt=54190 dst=52.53.140.235 dpt=443 proto=6 act=close";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->event, "fw_allow") != 0)
+        { FAIL("event should be fw_allow"); free_entry(entry); return; }
+    if (strcmp(entry->src_ip, "10.1.100.11") != 0)
+        { FAIL("src_ip mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->dst_ip, "52.53.140.235") != 0)
+        { FAIL("dst_ip mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->proto, "TCP") != 0)
+        { FAIL("proto should be TCP"); free_entry(entry); return; }
+    if (entry->dst_port != 443)
+        { FAIL("dst_port should be 443"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+void test_fortigate_cef_deny(void) {
+    TEST("FortiGate CEF act=deny");
+    const char* line = "2026-09-08T11:07:55+00:00 FGT-A-LOG fortigate: CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000001 FTNTFGTlogid=0001000013 cat=traffic:forward src=172.20.0.50 dst=172.20.0.4 spt=4444 dpt=22 proto=6 act=deny";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->event, "fw_block") != 0)
+        { FAIL("event should be fw_block"); free_entry(entry); return; }
+    if (strcmp(entry->src_ip, "172.20.0.50") != 0)
+        { FAIL("src_ip mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->dst_ip, "172.20.0.4") != 0)
+        { FAIL("dst_ip mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->proto, "TCP") != 0)
+        { FAIL("proto should be TCP"); free_entry(entry); return; }
+    if (entry->dst_port != 22)
+        { FAIL("dst_port should be 22"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+void test_fortigate_cef_drop(void) {
+    TEST("FortiGate CEF act=drop");
+    const char* line = "2026-09-08T11:07:55+00:00 FGT-A-LOG fortigate: CEF: 0|Fortinet|FortiGate|v7.0.0|00013|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=192.168.1.100 dst=8.8.8.8 spt=12345 dpt=53 proto=17 act=drop";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->event, "fw_block") != 0)
+        { FAIL("event should be fw_block"); free_entry(entry); return; }
+    if (strcmp(entry->proto, "UDP") != 0)
+        { FAIL("proto should be UDP"); free_entry(entry); return; }
+    if (entry->dst_port != 53)
+        { FAIL("dst_port should be 53"); free_entry(entry); return; }
     free_entry(entry);
     PASS();
 }
@@ -471,6 +524,9 @@ int main(void) {
     test_brand_ruijie_ap();
     test_brand_ruijie_auth();
     test_brand_fortigate();
+    test_fortigate_cef_close();
+    test_fortigate_cef_deny();
+    test_fortigate_cef_drop();
     test_brand_mikrotik_fw();
     test_empty_line();
     test_to_json();
