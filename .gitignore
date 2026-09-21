@@ -22,3 +22,7 @@ test_parser
 # Trained model — 800KB+ binary, reproducible via train/train_model.py
 pipeline/models/*.pkl
 
+# Training data — large downloadable archives, never commit
+*.zip
+*.csv
+
