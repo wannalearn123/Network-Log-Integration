@@ -1,5 +1,8 @@
-# Anomaly detector coordinator — orchestrates rules + ML detection layers.
+# Anomaly detector coordinator — rules engine (primary) + ML engine
+# (Isolation Forest second opinion, firewall-device traffic only).
 
+from db.init import get_connection, query_window, insert_anomaly, bump_anomaly
+from pipeline.rules_engine import detect_rules, THRESHOLD_VERSION
 import sys
 import time
 import json
@@ -8,13 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from pipeline.ml_engine import extract_features, load_model, detect_ml, WINDOW_SECONDS
-from pipeline.rules_engine import detect_rules, THRESHOLD_VERSION
-from db.init import get_connection, query_window, insert_anomaly, bump_anomaly
+# ML engine disabled — Isolation Forest scores live-rate windows out-of-
+# from pipeline.ml_engine import extract_features, load_model, detect_ml
 
 
 WINDOW_INTERVAL = 15  # seconds between detection cycles
-WINDOW_SIZE = WINDOW_SECONDS  # seconds of logs to query — must match training window
+WINDOW_SIZE = 30  # seconds of logs to query
 INSERT_COOLDOWN = 300  # seconds before inserting a new row for the same per-IP signature
 INSERT_COOLDOWN_FLOOD = 60  # shorter cooldown for aggregate FLOOD / HIGH_DROP_RATE
 
@@ -22,10 +24,12 @@ SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 MAX_COOLDOWN = max(INSERT_COOLDOWN, INSERT_COOLDOWN_FLOOD)  # 300s
 
 running = True
-_last_insert = {}  # (rule-signature) -> (anomaly_id, repeat_count, monotonic timestamp)
+# (rule-signature) -> (anomaly_id, repeat_count, monotonic timestamp)
+_last_insert = {}
+
+# Remove stale entries to prevent unbounded memory growth.
 
 
-    # Remove stale entries to prevent unbounded memory growth.
 def _prune_last_insert():
     now = time.monotonic()
     stale = [k for k, v in _last_insert.items() if (now - v[2]) > MAX_COOLDOWN]
@@ -35,10 +39,11 @@ def _prune_last_insert():
         print(f"[DETECTOR] Pruned {len(stale)} stale cooldown entries "
               f"({len(_last_insert)} remaining)", file=sys.stderr)
 
-
     # Build a hashable key so repeats of the same attack merge.
     # Includes a count bucket + minute bucket so distinct floods don't merge
     # for the full cooldown, and per-IP scans still dedup correctly.
+
+
 def merge_signature(rule_hits, ml_severity):
     parts = tuple(sorted(
         (h.get("type", "?"), str(h.get("src_ip", "-")),
@@ -56,8 +61,9 @@ def _cooldown_for(rule_hits):
         return INSERT_COOLDOWN
     return INSERT_COOLDOWN_FLOOD if rule_hits else INSERT_COOLDOWN
 
-
     # Merge results from rules + ML into one anomaly record, or None.
+
+
 def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=WINDOW_SIZE):
     max_severity = "LOW"
     descriptions = []
@@ -71,11 +77,7 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
         if SEV_RANK.get(hit["severity"], 0) > SEV_RANK[max_severity]:
             max_severity = hit["severity"]
 
-    # Layer 2: ML score
-    if ml_severity != "LOW":
-        descriptions.append(f"[ML] Anomaly score: {ml_score} ({ml_severity})")
-        if SEV_RANK.get(ml_severity, 0) > SEV_RANK[max_severity]:
-            max_severity = ml_severity
+    # ML engine disabled — rules engine is primary detection layer
 
     if not descriptions:
         return None
@@ -89,30 +91,30 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
             "window_seconds": window_seconds,
             "event_rate": (len(rows) / max(1, window_seconds)) if rows is not None else None,
             "threshold_version": THRESHOLD_VERSION,
-            "ml_score": ml_score,
-            "ml_severity": ml_severity,
+            # ML engine disabled
+            # "ml_score": ml_score,
+            # "ml_severity": ml_severity,
             "affected_ips": list(affected_ips),
         }),
     }
 
-
     # Main detection loop — run as daemon thread from orchestrator.
+
+
 def start_detector(interval=WINDOW_INTERVAL):
     global running
 
     print("[DETECTOR] Starting anomaly detector", file=sys.stderr)
 
-    # Load ML model (optional — rules still work without it)
-    model = load_model(expected_window_seconds=WINDOW_SIZE)
-    if model:
-        print("[DETECTOR] Loaded Isolation Forest model", file=sys.stderr)
-    else:
-        print("[DETECTOR] No ML model found or window mismatch — ML layer disabled", file=sys.stderr)
+    # ML layer disabled — rules engine is primary detection layer
+    model = None
+    print("[DETECTOR] ML layer disabled — using rules engine only", file=sys.stderr)
 
     try:
         conn = get_connection()
     except Exception as e:
-        print(f"[DETECTOR] FATAL: PostgreSQL unreachable: {e}", file=sys.stderr)
+        print(f"[DETECTOR] FATAL: PostgreSQL unreachable: {
+              e}", file=sys.stderr)
         raise
     cursor = conn.cursor()
 
@@ -121,19 +123,26 @@ def start_detector(interval=WINDOW_INTERVAL):
         try:
             # 1. Query the last WINDOW_SIZE seconds of logs
             rows = query_window(cursor, WINDOW_SIZE)
+            try:
+                conn.commit()  # release read snapshot so admin TRUNCATE never starves
+            except Exception:
+                pass
             if not rows:
                 time.sleep(interval)
                 continue
 
             # 1. Layer 1: Rule-based detection (instant)
-            rule_hits = detect_rules(rows, WINDOW_SIZE)
+            # Filter rows with src_ip — rules engine needs src_ip to detect patterns
+            rows_with_ip = [r for r in rows if r.get('src_ip')]
+            rule_hits = detect_rules(rows_with_ip, WINDOW_SIZE)
 
-            # 2. Layer 2: ML detection (instant)
-            features = extract_features(rows)
-            ml_score, ml_severity = detect_ml(features, model)
+            # ML engine disabled — rules engine is primary detection layer
+            ml_score = 0.0
+            ml_severity = "LOW"
 
             # 3. Combine all results
-            anomaly = combine_results(rule_hits, ml_score, ml_severity, rows, WINDOW_SIZE)
+            anomaly = combine_results(
+                rule_hits, ml_score, ml_severity, rows, WINDOW_SIZE)
 
             # 4. Insert if something was flagged (merge repeats into one row)
             if anomaly:
@@ -156,7 +165,8 @@ def start_detector(interval=WINDOW_INTERVAL):
                         file=sys.stderr,
                     )
                 else:
-                    anomaly_id = insert_anomaly(cursor, anomaly, window_seconds=WINDOW_SIZE)
+                    anomaly_id = insert_anomaly(
+                        cursor, anomaly, window_seconds=WINDOW_SIZE)
                     try:
                         conn.commit()
                     except Exception:
@@ -172,7 +182,8 @@ def start_detector(interval=WINDOW_INTERVAL):
                 print("[DETECTOR] Window clean — no anomalies", file=sys.stderr)
 
         except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
-            print(f"[DETECTOR] FATAL: database connection lost: {e}", file=sys.stderr)
+            print(f"[DETECTOR] FATAL: database connection lost: {
+                  e}", file=sys.stderr)
             running = False
             break
         except Exception as e:
