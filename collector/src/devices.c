@@ -4,6 +4,13 @@
 #include <string.h>
 #include <ctype.h>
 
+static void to_lower_copy(const char *src, char *dst, size_t n) {
+    size_t i;
+    for (i = 0; src[i] && i + 1 < n; i++)
+        dst[i] = tolower((unsigned char)src[i]);
+    dst[i] = '\0';
+}
+
 // Device type detection from hostname.
 // Token match: split on .-_, match exactly or followed by digits.
 static int host_has_token(const char *host_lower, const char *tok) {
@@ -25,28 +32,6 @@ static int host_has_token(const char *host_lower, const char *tok) {
         p = e;
     }
     return 0;
-}
-
-void detect_device_type(log_entry_t* entry) {
-    if (!entry->hostname[0]) {
-        snprintf(entry->device_type, sizeof(entry->device_type), "unknown");
-        return;
-    }
-
-    char host_lower[64];
-    int i;
-    for (i = 0; entry->hostname[i] && i < 63; i++) {
-        host_lower[i] = tolower(entry->hostname[i]);
-    }
-    host_lower[i] = '\0';
-
-    if (strstr(host_lower, "router"))       snprintf(entry->device_type, sizeof(entry->device_type), "router");
-    else if (strstr(host_lower, "switch"))  snprintf(entry->device_type, sizeof(entry->device_type), "switch");
-    else if (host_has_token(host_lower, "ap")) snprintf(entry->device_type, sizeof(entry->device_type), "ap");
-    else if (strstr(host_lower, "firewall")) snprintf(entry->device_type, sizeof(entry->device_type), "firewall");
-    else if (strstr(host_lower, "fw"))      snprintf(entry->device_type, sizeof(entry->device_type), "firewall");
-    else if (strstr(host_lower, "syslog"))  snprintf(entry->device_type, sizeof(entry->device_type), "syslog");
-    else snprintf(entry->device_type, sizeof(entry->device_type), "other");
 }
 
 // Case-insensitive key=value extraction. Value ends at space, comma, bracket, etc.
@@ -87,15 +72,6 @@ static int extract_kv_int(const char* msg, const char* key) {
         return atoi(buf);
     }
     return -1;
-}
-
-// Device-agnostic field extraction. device_type used only for fallback event names.
-
-static void to_lower_copy(const char *src, char *dst, size_t n) {
-    size_t i;
-    for (i = 0; src[i] && i + 1 < n; i++)
-        dst[i] = tolower((unsigned char)src[i]);
-    dst[i] = '\0';
 }
 
 static int contains_ci(const char *haystack_low, const char *needle_low) {
@@ -213,6 +189,24 @@ static void extract_proto_generic(const char *msg, const char *low,
             p++;
         }
     }
+}
+
+void detect_device_type(log_entry_t* entry) {
+    if (!entry->hostname[0]) {
+        snprintf(entry->device_type, sizeof(entry->device_type), "unknown");
+        return;
+    }
+
+    char host_lower[64];
+    to_lower_copy(entry->hostname, host_lower, sizeof(host_lower));
+
+    if (strstr(host_lower, "router")) snprintf(entry->device_type, sizeof(entry->device_type), "router");
+    else if (strstr(host_lower, "switch")) snprintf(entry->device_type, sizeof(entry->device_type), "switch");
+    else if (host_has_token(host_lower, "ap")) snprintf(entry->device_type, sizeof(entry->device_type), "ap");
+    else if (strstr(host_lower, "firewall") || strstr(host_lower, "fw"))
+        snprintf(entry->device_type, sizeof(entry->device_type), "firewall");
+    else if (strstr(host_lower, "syslog")) snprintf(entry->device_type, sizeof(entry->device_type), "syslog");
+    else snprintf(entry->device_type, sizeof(entry->device_type), "other");
 }
 
 void extract_fields(log_entry_t* entry) {

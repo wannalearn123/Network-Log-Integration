@@ -1,10 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
 #include "collector.h"
 #include "parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
-#define LINE_INIT_CAP 4096
 #define LINE_MAX_BYTES (1024 * 1024) /* 1MB abuse cap — larger lines dropped + counted */
 
 // Emit one complete line (without trailing \n) as JSON.
@@ -14,8 +15,7 @@ static void emit_line(char *line) {
     if (entry) {
         char* json = to_json(entry);
         if (json) {
-            fputs(json, stdout);
-            fputc('\n', stdout);
+            puts(json);
             fflush(stdout);
             free(json);
         }
@@ -36,74 +36,24 @@ int collector_run(const char* source) {
         in = stdin;
     }
 
-    size_t cap = LINE_INIT_CAP;
-    size_t pos = 0;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
     size_t oversize_dropped = 0;
-    int over_limit = 0;
-    char *line = malloc(cap);
-    if (!line) {
-        fprintf(stderr, "collector: out of memory\n");
-        if (source) fclose(in);
-        return 1;
-    }
 
-    while (1) {
-        int c = fgetc(in);
-
-        if (c == EOF) {
-            if (over_limit) {
-                oversize_dropped++;
-                fprintf(stderr, "collector: dropped oversize line (>%d bytes), total dropped=%zu\n",
-                        LINE_MAX_BYTES, oversize_dropped);
-            } else if (pos > 0) {
-                line[pos] = '\0';
-                emit_line(line);
-            }
-            break;
-        }
-
-        if (c == '\n') {
-            if (over_limit) {
-                over_limit = 0;
-                pos = 0;
-                oversize_dropped++;
-                fprintf(stderr, "collector: dropped oversize line (>%d bytes), total dropped=%zu\n",
-                        LINE_MAX_BYTES, oversize_dropped);
-                continue;
-            }
-            line[pos] = '\0';
-            if (pos > 0) emit_line(line);
-            pos = 0;
+    while ((len = getline(&line, &cap, in)) != -1) {
+        if (len > 0 && line[len - 1] == '\n')
+            line[--len] = '\0';
+        if (len > LINE_MAX_BYTES) {
+            oversize_dropped++;
+            fprintf(stderr, "collector: dropped oversize line (>%d bytes), total dropped=%zu\n", LINE_MAX_BYTES, oversize_dropped);
             continue;
         }
-
-        if (over_limit) continue;
-
-        if (pos + 1 >= cap) {
-            if (cap >= LINE_MAX_BYTES) {
-                over_limit = 1;
-                pos = 0;
-                continue;
-            }
-            size_t ncap = cap * 2;
-            if (ncap > LINE_MAX_BYTES) ncap = LINE_MAX_BYTES;
-            char *nline = realloc(line, ncap);
-            if (!nline) {
-                fprintf(stderr, "collector: out of memory growing to %zu\n", ncap);
-                free(line);
-                if (source) fclose(in);
-                return 1;
-            }
-            line = nline;
-            cap = ncap;
-        }
-        line[pos++] = (char)c;
+        if (len > 0)
+            emit_line(line);
     }
 
     free(line);
-    if (source) {
-        fclose(in);
-    }
-
+    if (source) fclose(in);
     return 0;
 }

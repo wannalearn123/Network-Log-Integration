@@ -65,6 +65,11 @@ void parse_priority(log_entry_t* entry, const char** cursor) {
 
         while (*p && *p != '>') p++;
         if (*p == '>') p++;
+        // Skip RFC 5424 version number (e.g., "<134>1 ...")
+        if (isdigit((unsigned char)*p)) {
+            while (*p && isdigit((unsigned char)*p)) p++;
+            while (*p == ' ') p++;
+        }
     } else {
         strncpy(entry->facility, "user", sizeof(entry->facility) - 1);
         strncpy(entry->severity, "info", sizeof(entry->severity) - 1);
@@ -108,11 +113,8 @@ void parse_timestamp(log_entry_t* entry, const char** cursor) {
                 }
             }
         }
-        if (month >= 1 && month <= 12
-                && day >= 1 && day <= 31
-                && hh >= 0 && hh <= 23
-                && mm >= 0 && mm <= 59
-                && ss >= 0 && ss <= 60) {
+        if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && hh >= 0 && hh <= 23
+                && mm >= 0 && mm <= 59 && ss >= 0 && ss <= 60) {
             time_t now = time(NULL);
             struct tm *tm = gmtime(&now);
             int year = (tm ? tm->tm_year + 1900 : 2026);
@@ -153,13 +155,11 @@ void parse_timestamp(log_entry_t* entry, const char** cursor) {
 void parse_hostname(log_entry_t* entry, const char** cursor) {
     const char* p = *cursor;
 
-    {
-        int i = 0;
-        while (*p && *p != ' ' && *p != ':' && i < 63) {
-            entry->hostname[i++] = *p++;
-        }
-        entry->hostname[i] = '\0';
-    }
+	int i = 0;
+	while (*p && *p != ' ' && *p != ':' && i < 63) {
+		entry->hostname[i++] = *p++;
+	}
+	entry->hostname[i] = '\0';
 
     // Skip ": " or space after hostname
     while (*p == ' ' || *p == ':') p++;
