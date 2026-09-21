@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-# Network LAN Monitor — TUI Dashboard
-#
 # Real-time terminal dashboard for the network monitoring system.
-# Displays live logs, anomaly alerts, and system stats.
-#
-# Usage:
-# .venv/bin/python tui/app.py
-# .venv/bin/python run.py          # starts orchestrator + TUI
-
 import sys
 from pathlib import Path
 
-# Add project root to path
+# Add project root to path (must be before project imports)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from textual.app import App, ComposeResult
@@ -19,7 +11,6 @@ from textual.binding import Binding
 from textual.reactive import reactive
 from textual.containers import Horizontal
 from textual.widgets import Footer
-
 from db.init import get_connection
 from tui.queries import (
     SQL_LOGS, SQL_LOGS_SEARCH,
@@ -28,12 +19,14 @@ from tui.queries import (
 )
 from tui.widgets.log_stream import LogStream
 from tui.widgets.anomaly_panel import AnomalyPanel
-from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen
+from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen, SecurityOverviewScreen
 from tui.widgets.stats_bar import StatsBar
 from tui.widgets.search_bar import SearchBar
 
 
-    # Network LAN Monitor TUI Dashboard.
+# Network LAN Monitor TUI Dashboard.
+
+
 class NetworkMonitor(App):
 
     CSS = """
@@ -79,6 +72,8 @@ class NetworkMonitor(App):
         Binding("escape", "dismiss", "Close"),
         Binding("tab", "focus_next", "Next", show=True, priority=True),
         Binding("slash", "focus_search", "Search", show=True),
+        Binding("space", "security_overview",
+                "Overview", show=True, priority=True),
     ]
 
     paused: reactive[bool] = reactive(False)
@@ -158,7 +153,8 @@ class NetworkMonitor(App):
                 like = None
 
             if like:
-                cur.execute(SQL_LOGS_SEARCH, (like, like, like, like, like, like))
+                cur.execute(SQL_LOGS_SEARCH,
+                            (like, like, like, like, like, like))
             else:
                 cur.execute(SQL_LOGS)
             self._log_table.populate(cur.fetchall())
@@ -206,6 +202,10 @@ class NetworkMonitor(App):
         if self._search_bar.has_focus:
             self._search_bar.clear_search()
             self._search_bar.blur()
+
+    def action_security_overview(self):
+        self._open_detail(SecurityOverviewScreen())
+
 
 if __name__ == "__main__":
     app = NetworkMonitor()

@@ -73,10 +73,90 @@ class AnomalyDetailScreen(ModalScreen):
         self.row = row
 
     def compose(self) -> ComposeResult:
-        sev = self.row.get("severity", "")
-        score = self.row.get("score", "")
-        desc = self.row.get("description", "")
         with Vertical(id="anomaly-card"):
-            yield Static(f"[bold]Severity:[/] {sev}")
-            yield Static(f"[bold]Score:[/]   {score}")
-            yield Static(f"[bold]Description:[/] {desc}")
+            yield Static(f"[bold]Severity:[/] {self.row.get("severity", "")}")
+            yield Static(f"[bold]Score:[/]   {self.row.get("score", "")}")
+            yield Static(f"[bold]Description:[/] {self.row.get("description", "")}")
+
+
+# Security overview modal — severity breakdown, top sources, detection types.
+class SecurityOverviewScreen(ModalScreen):
+
+    CSS = """
+    SecurityOverviewScreen {
+        align: center middle;
+    }
+    #overview-card {
+        width: 50;
+        height: auto;
+        max-height: 30;
+        border: solid $warning;
+        padding: 1 2;
+    }
+    #overview-card Static {
+        height: auto;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        from db.init import get_connection
+        from tui.queries import (
+            SQL_STATS_ANOMALIES, SQL_SECURITY_SOURCES, SQL_SECURITY_DETECTIONS,
+        )
+
+        sev_crit = sev_high = sev_med = sev_low = 0
+        sources = []
+        detections = []
+
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+
+            cur.execute(SQL_STATS_ANOMALIES)
+            r = cur.fetchone()
+            if r:
+                _, _, sev_crit, sev_high, sev_med, sev_low = r
+
+            cur.execute(SQL_SECURITY_SOURCES)
+            sources = cur.fetchall()
+
+            cur.execute(SQL_SECURITY_DETECTIONS)
+            detections = cur.fetchall()
+
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+        max_src = sources[0][1] if sources else 1
+        max_det = detections[0][1] if detections else 1
+
+        with Vertical(id="overview-card"):
+            yield Static("[bold white]SECURITY OVERVIEW[/]")
+            yield Static("─" * 44)
+            yield Static("")
+            yield Static(f"  CRITICAL     [bold red]{sev_crit}[/]")
+            yield Static(f"  HIGH         [bold yellow]{sev_high}[/]")
+            yield Static(f"  MEDIUM       {sev_med}")
+            yield Static(f"  LOW          {sev_low}")
+            yield Static("")
+            yield Static("[bold]TOP SOURCES[/]")
+            for ip, cnt in sources:
+                bar = self._bar(cnt / max_src)
+                yield Static(f"  {ip:<16} {bar}  {cnt}")
+            if not sources:
+                yield Static("  (none)")
+            yield Static("")
+            yield Static("[bold]DETECTION TYPES[/]")
+            for dtype, cnt in detections:
+                yield Static(f"  {dtype:<16} {cnt}")
+            if not detections:
+                yield Static("  (none)")
+
+    def _bar(self, pct):
+        filled = int(pct * 15)
+        return "█" * filled + "░" * (15 - filled)

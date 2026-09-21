@@ -54,3 +54,30 @@ SELECT COUNT(*) AS total_anomalies,
        COUNT(*) FILTER (WHERE severity = 'LOW') AS sev_low
 FROM anomalies
 """
+
+SQL_SECURITY_SOURCES = """
+SELECT
+    (regexp_match(description, 'from ([0-9.]+)'))[1] AS src_ip,
+    COUNT(*) AS cnt
+FROM anomalies
+WHERE description ILIKE '%from %'
+GROUP BY src_ip
+ORDER BY cnt DESC
+LIMIT 5
+"""
+
+SQL_SECURITY_DETECTIONS = """
+SELECT
+    CASE
+        WHEN description ILIKE '%Port scan%' THEN 'Port Scan'
+        WHEN description ILIKE '%Brute force%' THEN 'Brute Force'
+        WHEN description ILIKE '%Traffic flood%' THEN 'Traffic Flood'
+        WHEN description ILIKE '%Deauth storm%' THEN 'Deauth Storm'
+        WHEN description ILIKE '%firewall drop%' THEN 'High Drop Rate'
+        ELSE 'Other'
+    END AS detection_type,
+    COUNT(*) AS cnt
+FROM anomalies
+GROUP BY detection_type
+ORDER BY cnt DESC
+"""
