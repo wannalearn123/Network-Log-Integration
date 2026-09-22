@@ -1,20 +1,47 @@
 # Rule-based anomaly detection engine — deterministic pattern matching, no ML.
 # Thresholds are rates (per second) so any window size scores the same.
-# 30s equivalents: 12 ports / 12 fails / 210 events / 100 drops.
+# 30s equivalents: 12 ports / 12 fails / 210 events / 100 drops /
+#                  3 MAC flaps / 2 STP changes / 6 route updates.
 # Adjusted for realistic traffic: 99%+ normal, <1% attacks.
 
 from collections import defaultdict
+import re
 
 
-THRESHOLD_VERSION = "v3-realistic"
+THRESHOLD_VERSION = "v4-attr"
 PORT_SCAN_RATE = 0.4     # >=12 unique ports in 30s (was 0.2 / 6 ports)
 BRUTE_RATE = 0.4         # >=12 fails in 30s (was 0.2 / 6 fails)
 DEAUTH_RATE = 0.3        # >=9 deauths in 30s, deauth-only (no auth failures mixed in)
 FLOOD_RATE = 8.0         # >=240 events in 30s (was 7.0 / 210 events — reduced false positives)
 DROP_RATE = 3.3333       # >=100 drops in 30s (was 0.367 / 11 drops)
+MAC_FLAP_RATE = 0.1      # >=3 flaps of the same MAC in 30s
+STP_RATE = 0.0667        # >=2 STP root changes in 30s
+ROUTE_CHURN_RATE = 0.2   # >=6 route updates in 30s
+
+
+_IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+
+    # Attributed identity for a row: AP rows key on client_mac, switch rows
+    # on mac, everything else on src_ip. Returns None when unattributable
+    # (old rows without v2 fields behave as before).
+def _identity(row):
+    device = (row.get("device_type") or "")
+    if device == "ap":
+        cm = row.get("client_mac")
+        return str(cm) if cm else None
+    if device == "switch":
+        m = row.get("mac")
+        return str(m) if m else None
+    src = row.get("src_ip")
+    if not src or str(src).lower() in ("unknown", "none", ""):
+        return None
+    return str(src)
 
 
     # Analyze log rows for known attack patterns. Returns list of hit dicts.
+    # Each hit carries "entity" (IP or MAC) for merging/attribution plus the
+    # legacy "src_ip" key when the entity is an IP.
 def detect_rules(rows, window_seconds=30):
     window_seconds = max(1, int(window_seconds or 30))
     hits = []
@@ -31,47 +58,57 @@ def detect_rules(rows, window_seconds=30):
                 "severity": "HIGH",
                 "description": f"Port scan from {ip} — {len(ports)} ports in {window_seconds}s",
                 "src_ip": ip,
+                "entity": ip,
             })
 
     # Rule 2: Brute force (auth failures only) + separate deauth storm.
     # DEAUTH alone is normal WiFi roaming — never CRITICAL by itself.
     # Also detects repeated fw_block to sensitive ports (SSH/HTTP) as brute force.
+    # AP auth failures attribute to client_mac (v2); firewall to src_ip.
     ip_fails = defaultdict(int)
     ip_deauth = defaultdict(int)
     SENSITIVE_PORTS = {22, 443, 3389, 21, 23}  # SSH, HTTPS, RDP, FTP, Telnet (NOT 80 — DDoS target)
     for row in rows:
         ev = (row.get("event") or "").upper()
         src = row.get("src_ip")
-        if not src or str(src).lower() in ("unknown", "none", ""):
+        if (row.get("device_type") or "") == "ap":
+            ent = row.get("client_mac")
+            ent = str(ent) if ent else None
+        elif not src or str(src).lower() in ("unknown", "none", ""):
+            ent = None
+        else:
+            ent = str(src)
+        if not ent:
             continue
-        s = str(src)
         # Explicit brute force / auth failure events
         if "BRUTE" in ev or "AUTH_FAILURE" in ev or ("FAILED" in ev and "AUTH" in ev):
-            ip_fails[s] += 1
+            ip_fails[ent] += 1
         # Repeated fw_block to sensitive ports = likely brute force
         elif "FW_BLOCK" in ev or "BLOCK" in ev:
             dst_port = row.get("dst_port")
             if dst_port and int(dst_port) in SENSITIVE_PORTS:
-                ip_fails[s] += 1
+                ip_fails[ent] += 1
         if "DEAUTH" in ev:
-            ip_deauth[s] += 1
-    for ip, count in ip_fails.items():
+            ip_deauth[ent] += 1
+    for ent, count in ip_fails.items():
         if count / window_seconds >= BRUTE_RATE:
             hits.append({
                 "type": "BRUTE_FORCE",
                 "severity": "CRITICAL",
-                "description": f"Brute force from {ip} — {count} fails in {window_seconds}s",
-                "src_ip": ip,
+                "description": f"Brute force from {ent} — {count} fails in {window_seconds}s",
+                "src_ip": ent if _IPV4_RE.match(ent) else None,
+                "entity": ent,
             })
-    for ip, count in ip_deauth.items():
-        if ip in ip_fails:
+    for ent, count in ip_deauth.items():
+        if ent in ip_fails:
             continue  # already covered by brute-force above
         if count / window_seconds >= DEAUTH_RATE:
             hits.append({
                 "type": "DEAUTH_STORM",
                 "severity": "MEDIUM",
-                "description": f"Deauth storm from {ip} — {count} in {window_seconds}s",
-                "src_ip": ip,
+                "description": f"Deauth storm from {ent} — {count} in {window_seconds}s",
+                "src_ip": None,
+                "entity": ent,
             })
 
     # Rule 3: Traffic flood — event rate
@@ -81,6 +118,7 @@ def detect_rules(rows, window_seconds=30):
             "severity": "HIGH",
             "description": f"Traffic flood — {len(rows)} events in {window_seconds}s",
             "src_ip": None,
+            "entity": None,
         })
 
     # Rule 4: High drop rate — drop rate (parser emits lowercase fw_block)
@@ -94,6 +132,56 @@ def detect_rules(rows, window_seconds=30):
             "severity": "MEDIUM",
             "description": f"High firewall drop rate — {drop_count} drops in {window_seconds}s",
             "src_ip": None,
+            "entity": None,
+        })
+
+    # Rule 5: MAC flap storm — same MAC flapping repeatedly (loop/spoof/MITM).
+    mac_flaps = defaultdict(list)
+    for row in rows:
+        if (row.get("event") or "").upper() == "MAC_FLAP":
+            m = row.get("mac") or _identity(row)
+            if m:
+                mac_flaps[str(m)].append(row)
+    for mac, rs in mac_flaps.items():
+        if len(rs) / window_seconds >= MAC_FLAP_RATE:
+            vlan = rs[0].get("vlan_id")
+            ports = sorted({str(r.get("ifname") or "?") for r in rs} |
+                           {str(r.get("peer_ifname") or "?") for r in rs} - {"?"})
+            detail = f" (vlan {vlan})" if vlan else ""
+            pdetail = f" between {'/'.join(ports)}" if ports else ""
+            hits.append({
+                "type": "MAC_FLAP",
+                "severity": "HIGH",
+                "description": f"MAC flap storm {mac}{detail} — {len(rs)} flaps in {window_seconds}s{pdetail}",
+                "src_ip": None,
+                "entity": mac,
+            })
+
+    # Rule 6: STP instability — repeated root changes (rogue root / loop).
+    stp_rows = [r for r in rows if (r.get("event") or "").upper() == "STP_EVENT"]
+    if len(stp_rows) / window_seconds >= STP_RATE:
+        roots = sorted({str(r.get("stp_root") or r.get("ifname") or "?") for r in stp_rows} - {"?"})
+        rdetail = f" (root {', '.join(roots)})" if roots else ""
+        hits.append({
+            "type": "STP_FLAP",
+            "severity": "HIGH",
+            "description": f"STP instability — {len(stp_rows)} root changes in {window_seconds}s{rdetail}",
+            "src_ip": None,
+            "entity": None,
+        })
+
+    # Rule 7: Route churn — repeated route/OSPF updates (hijack / flapping peer).
+    rt_rows = [r for r in rows
+               if (r.get("event") or "").upper() in ("ROUTE_UPDATE", "ROUTE_CHANGE")]
+    if len(rt_rows) / window_seconds >= ROUTE_CHURN_RATE:
+        nbrs = sorted({str(r.get("ospf_nbr") or r.get("gateway") or "?") for r in rt_rows} - {"?"})
+        ndetail = f" (peer {', '.join(nbrs)})" if nbrs else ""
+        hits.append({
+            "type": "ROUTE_CHURN",
+            "severity": "MEDIUM",
+            "description": f"Route churn — {len(rt_rows)} updates in {window_seconds}s{ndetail}",
+            "src_ip": None,
+            "entity": None,
         })
 
     return hits

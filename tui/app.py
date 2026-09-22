@@ -154,7 +154,7 @@ class NetworkMonitor(App):
 
             if like:
                 cur.execute(SQL_LOGS_SEARCH,
-                            (like, like, like, like, like, like))
+                            (like,) * 10)
             else:
                 cur.execute(SQL_LOGS)
             self._log_table.populate(cur.fetchall())

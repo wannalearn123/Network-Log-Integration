@@ -25,8 +25,18 @@ def get_connection():
 
 LOG_COLUMNS = (
     "timestamp", "hostname", "facility", "severity",
-    "device_type", "event", "src_ip", "dst_ip", "proto", "dst_port", "raw_line",
+    "device_type", "event", "src_ip", "dst_ip", "proto", "dst_port",
+    # v2 fields (collector {"v":2}); absent keys insert as NULL via .get()
+    "src_port", "action", "tcp_flags",
+    "mac", "vlan_id", "ifname", "peer_ifname", "stp_root",
+    "client_mac", "ssid", "radio", "reason", "signal_dbm",
+    "tx_rate_mbps", "eap_status",
+    "ospf_nbr", "gateway", "route_dst", "dhcp_mac", "conntrack_count",
+    "raw_line",
 )
+
+_LOG_COLS_SQL = ", ".join(LOG_COLUMNS)
+_LOG_PLACEHOLDERS = ", ".join(["%s"] * len(LOG_COLUMNS))
 
 
 def _entry_tuple(entry):
@@ -34,11 +44,10 @@ def _entry_tuple(entry):
 
 
 def insert_log_entry(cursor, entry):
-    cursor.execute("""
-        INSERT INTO logs (timestamp, hostname, facility, severity,
-                         device_type, event, src_ip, dst_ip, proto, dst_port, raw_line)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, _entry_tuple(entry))
+    cursor.execute(
+        f"INSERT INTO logs ({_LOG_COLS_SQL}) VALUES ({_LOG_PLACEHOLDERS})",
+        _entry_tuple(entry),
+    )
 
 
 def insert_log_batch(cursor, entries):
@@ -50,22 +59,20 @@ def insert_log_batch(cursor, entries):
         return
     execute_values(
         cursor,
-        "INSERT INTO logs (timestamp, hostname, facility, severity,"
-        " device_type, event, src_ip, dst_ip, proto, dst_port, raw_line)"
-        " VALUES %s",
+        f"INSERT INTO logs ({_LOG_COLS_SQL}) VALUES %s",
         [_entry_tuple(e) for e in entries],
     )
 
 
     # Query logs from the last N seconds.
 def query_window(cursor, window_seconds=60):
-    cursor.execute("""
-        SELECT timestamp, hostname, facility, severity,
-               device_type, event, src_ip, dst_ip, proto, dst_port
+    cursor.execute(
+        f"""SELECT {_LOG_COLS_SQL}
         FROM logs
         WHERE timestamp >= NOW() - make_interval(secs => %s)
-        ORDER BY timestamp
-    """, (window_seconds,))
+        ORDER BY timestamp""",
+        (window_seconds,),
+    )
 
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]

@@ -2,7 +2,12 @@
 
 SQL_LOGS = """
 SELECT timestamp, hostname, device_type, event,
-       src_ip, dst_ip, proto, dst_port
+       host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, proto, dst_port,
+       COALESCE(client_mac, mac, host(dst_ip)) AS entity,
+       src_port, action, tcp_flags, mac, vlan_id, ifname, peer_ifname,
+       stp_root, client_mac, ssid, radio, reason, signal_dbm,
+       tx_rate_mbps, eap_status, ospf_nbr, gateway, route_dst,
+       dhcp_mac, conntrack_count
 FROM logs
 ORDER BY timestamp DESC
 LIMIT 80
@@ -10,7 +15,12 @@ LIMIT 80
 
 SQL_LOGS_SEARCH = """
 SELECT timestamp, hostname, device_type, event,
-       src_ip, dst_ip, proto, dst_port
+       host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, proto, dst_port,
+       COALESCE(client_mac, mac, host(dst_ip)) AS entity,
+       src_port, action, tcp_flags, mac, vlan_id, ifname, peer_ifname,
+       stp_root, client_mac, ssid, radio, reason, signal_dbm,
+       tx_rate_mbps, eap_status, ospf_nbr, gateway, route_dst,
+       dhcp_mac, conntrack_count
 FROM logs
 WHERE hostname ILIKE %s ESCAPE '\\'
    OR device_type ILIKE %s ESCAPE '\\'
@@ -18,6 +28,10 @@ WHERE hostname ILIKE %s ESCAPE '\\'
    OR src_ip::text ILIKE %s ESCAPE '\\'
    OR dst_ip::text ILIKE %s ESCAPE '\\'
    OR proto ILIKE %s ESCAPE '\\'
+   OR client_mac ILIKE %s ESCAPE '\\'
+   OR mac ILIKE %s ESCAPE '\\'
+   OR ssid ILIKE %s ESCAPE '\\'
+   OR ifname ILIKE %s ESCAPE '\\'
 ORDER BY timestamp DESC
 LIMIT 80
 """
@@ -57,7 +71,7 @@ FROM anomalies
 
 SQL_SECURITY_SOURCES = """
 SELECT
-    (regexp_match(description, 'from ([0-9.]+)'))[1] AS src_ip,
+    (regexp_match(description, 'from ([0-9A-Za-z.:_-]+)'))[1] AS src_ip,
     COUNT(*) AS cnt
 FROM anomalies
 WHERE description ILIKE '%from %'
@@ -74,6 +88,9 @@ SELECT
         WHEN description ILIKE '%Traffic flood%' THEN 'Traffic Flood'
         WHEN description ILIKE '%Deauth storm%' THEN 'Deauth Storm'
         WHEN description ILIKE '%firewall drop%' THEN 'High Drop Rate'
+        WHEN description ILIKE '%MAC flap%' THEN 'MAC Flap'
+        WHEN description ILIKE '%STP instability%' THEN 'STP Flap'
+        WHEN description ILIKE '%Route churn%' THEN 'Route Churn'
         ELSE 'Other'
     END AS detection_type,
     COUNT(*) AS cnt

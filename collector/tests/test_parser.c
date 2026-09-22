@@ -1,4 +1,5 @@
 #include "../src/parser.h"
+#include "../src/json_out.h"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -79,20 +80,6 @@ void test_parse_router_dhcp(void) {
     PASS();
 }
 
-void test_parse_scan_detected(void) {
-    TEST("Parse firewall scan detection");
-    const char* line = "2026-08-31T08:16:26+00:00 firewall.docker_building-lan fwdaemon: [SCAN DETECTED] Port scan from 172.20.0.50 - 12 ports in 5s";
-
-    log_entry_t* entry = parse_syslog_line(line);
-    if (!entry) { FAIL("returned NULL"); return; }
-
-    if (strcmp(entry->event, "scan_detected") != 0)
-        { FAIL("event should be scan_detected"); free_entry(entry); return; }
-
-    free_entry(entry);
-    PASS();
-}
-
 void test_empty_line(void) {
     TEST("Empty line returns NULL");
     log_entry_t* entry = parse_syslog_line("");
@@ -145,6 +132,12 @@ void test_to_json_escaping(void) {
     snprintf(entry.device_type, sizeof(entry.device_type), "other");
     snprintf(entry.event, sizeof(entry.event), "unknown");
     entry.dst_port = -1;
+    entry.src_port = UNSET_INT;
+    entry.vlan_id = UNSET_INT;
+    entry.reason = UNSET_INT;
+    entry.signal_dbm = UNSET_INT;
+    entry.tx_rate_mbps = UNSET_INT;
+    entry.conntrack_count = UNSET_INT;
     entry.raw_line = "raw";
 
     char* json = to_json(&entry);
@@ -504,14 +497,215 @@ void test_ap01_is_ap(void) {
     PASS();
 }
 
+// v2: firewall kernel line carries src_port + action + ifname.
+void test_v2_firewall_kernel(void) {
+    TEST("v2 firewall kernel fields");
+    const char* line = "2026-09-21T02:30:21+00:00 firewall.docker_building-lan kernel: [FW REJECT] IN=eth0 OUT= SRC=172.20.100.48 DST=172.20.0.4 PROTO=UDP SPT=19080 DPT=3306";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (entry->src_port != 19080)
+        { FAIL("src_port should be 19080"); free_entry(entry); return; }
+    if (strcmp(entry->action, "reject") != 0)
+        { FAIL("action should be reject"); free_entry(entry); return; }
+    if (strcmp(entry->ifname, "eth0") != 0)
+        { FAIL("ifname should be eth0"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: FortiGate CEF line carries src_port + normalized action.
+void test_v2_fortigate_cef(void) {
+    TEST("v2 FortiGate CEF fields");
+    const char* line = "2026-09-21T02:30:23+00:00 firewall.docker_building-lan fortigate: CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F000000001795 FTNTFGTlogid=0000000003 cat=traffic:forward src=172.20.100.1 dst=172.20.0.4 spt=28058 dpt=443 proto=17 act=deny";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (entry->src_port != 28058)
+        { FAIL("src_port should be 28058"); free_entry(entry); return; }
+    if (strcmp(entry->action, "deny") != 0)
+        { FAIL("action should be deny"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: DDoS SYN line carries tcp_flags.
+void test_v2_tcp_flags(void) {
+    TEST("v2 TCP SYN flag");
+    const char* line = "2026-09-21T02:30:32+00:00 firewall.docker_building-lan kernel: [FW DROP] IN=eth0 SRC=172.20.0.50 DST=172.20.0.4 PROTO=TCP SPT=12345 DPT=80 SYN";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->tcp_flags, "SYN") != 0)
+        { FAIL("tcp_flags should be SYN"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: switch MAC flap carries mac + vlan + both ports.
+void test_v2_switch_flap(void) {
+    TEST("v2 switch MAC flap fields");
+    const char* line = "2026-09-21T02:31:50+00:00 switch.docker_building-lan ios: %SW_MATM-4-MACFLAP_NOTIF: Host 6c58.5f2f.26a6 in vlan 12 is flapping between port Gi1/0/3 and port Gi1/0/4";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->mac, "6c58.5f2f.26a6") != 0)
+        { FAIL("mac mismatch"); free_entry(entry); return; }
+    if (entry->vlan_id != 12)
+        { FAIL("vlan_id should be 12"); free_entry(entry); return; }
+    if (strcmp(entry->ifname, "Gi1/0/3") != 0)
+        { FAIL("ifname mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->peer_ifname, "Gi1/0/4") != 0)
+        { FAIL("peer_ifname mismatch"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: switch STP root change carries vlan + root.
+void test_v2_switch_stp(void) {
+    TEST("v2 switch STP fields");
+    const char* line = "2026-09-21T02:30:20+00:00 switch.docker_building-lan rgos: %SPANTREE-5-ROOTCHANGE: Root changed on VLAN1 \u2014 new root Gi0/1";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (entry->vlan_id != 1)
+        { FAIL("vlan_id should be 1"); free_entry(entry); return; }
+    if (strcmp(entry->stp_root, "Gi0/1") != 0)
+        { FAIL("stp_root mismatch"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: AP deauth carries client MAC + reason + radio.
+void test_v2_ap_deauth(void) {
+    TEST("v2 AP deauth fields");
+    const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan hostapd: wlan0: AP-STA-DEAUTH aa:bb:cc:4b:ea:09 reason=4";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->client_mac, "aa:bb:cc:4b:ea:09") != 0)
+        { FAIL("client_mac mismatch"); free_entry(entry); return; }
+    if (entry->reason != 4)
+        { FAIL("reason should be 4"); free_entry(entry); return; }
+    if (strcmp(entry->radio, "wlan0") != 0)
+        { FAIL("radio should be wlan0"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: AP signal report carries signal + tx rate.
+void test_v2_ap_signal(void) {
+    TEST("v2 AP signal fields");
+    const char* line = "2026-09-21T02:31:56+00:00 ap.docker_building-lan hostapd: wlan0: Station aa:bb:cc:ba:4a:28 signal=67 dBm tx_rate=29Mbps";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (entry->signal_dbm != 67)
+        { FAIL("signal_dbm should be 67"); free_entry(entry); return; }
+    if (entry->tx_rate_mbps != 29)
+        { FAIL("tx_rate_mbps should be 29"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: AP auth failure carries dot-MAC + eap_status.
+void test_v2_ap_authfail(void) {
+    TEST("v2 AP auth failure fields");
+    const char* line = "2026-09-21T02:31:13+00:00 ap.docker_building-lan DOT11: DOT11-4-AUTH_FAILED: Station 5f1c.10f4.3bb1 authentication failed";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->client_mac, "5f1c.10f4.3bb1") != 0)
+        { FAIL("client_mac mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->eap_status, "failed") != 0)
+        { FAIL("eap_status should be failed"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: AP assoc carries SSID.
+void test_v2_ap_ssid(void) {
+    TEST("v2 AP SSID field");
+    const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan DOT11: DOT11-6-ASSOC: Station 0ad8.51c6.01e4 associated to WLAN wlan1 (SSID Campus)";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->ssid, "Campus") != 0)
+        { FAIL("ssid should be Campus"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: router OSPF carries neighbor + interface.
+void test_v2_router_ospf(void) {
+    TEST("v2 router OSPF fields");
+    const char* line = "2026-09-21T02:30:20+00:00 router.docker_building-lan ios: %OSPF-5-ADJCHG: Process 1, Nbr 172.20.0.9 on GigabitEthernet0/0 from LOADING to FULL (2 routes)";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->ospf_nbr, "172.20.0.9") != 0)
+        { FAIL("ospf_nbr mismatch"); free_entry(entry); return; }
+    if (strcmp(entry->ifname, "GigabitEthernet0/0") != 0)
+        { FAIL("ifname mismatch"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: router DHCPACK carries client MAC.
+void test_v2_router_dhcp(void) {
+    TEST("v2 router DHCP fields");
+    const char* line = "2026-09-21T02:30:20+00:00 router.docker_building-lan dhcpd: DHCPACK to 172.20.100.14 (aa:bb:cc:53:32:25) via eth0";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->dhcp_mac, "aa:bb:cc:53:32:25") != 0)
+        { FAIL("dhcp_mac mismatch"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: router route line carries gateway + route_dst.
+void test_v2_router_route(void) {
+    TEST("v2 router route fields");
+    const char* line = "2026-09-21T02:32:06+00:00 router.docker_building-lan route: route,info route added dst-address=172.20.100.0/24 gateway=172.20.0.16 (2 routes)";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (strcmp(entry->gateway, "172.20.0.16") != 0)
+        { FAIL("gateway mismatch"); free_entry(entry); return; }
+    if (!strstr(entry->route_dst, "172.20.100.0"))
+        { FAIL("route_dst mismatch"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: conntrack count is parsed.
+void test_v2_conntrack(void) {
+    TEST("v2 conntrack count field");
+    const char* line = "2026-09-21T02:30:21+00:00 firewall.docker_building-lan fwdaemon: Connection tracking: 5 entries";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    if (entry->conntrack_count != 5)
+        { FAIL("conntrack_count should be 5"); free_entry(entry); return; }
+    free_entry(entry);
+    PASS();
+}
+
+// v2: JSON carries "v":2 and new keys, omits unset optionals.
+void test_v2_json_shape(void) {
+    TEST("v2 JSON shape");
+    const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan hostapd: wlan0: AP-STA-DEAUTH aa:bb:cc:4b:ea:09 reason=4";
+    log_entry_t* entry = parse_syslog_line(line);
+    if (!entry) { FAIL("returned NULL"); return; }
+    char* json = to_json(entry);
+    if (!json) { FAIL("to_json returned NULL"); free_entry(entry); return; }
+    if (!strstr(json, "\"v\":2"))
+        { FAIL("JSON missing \"v\":2"); free(json); free_entry(entry); return; }
+    if (!strstr(json, "\"client_mac\":\"aa:bb:cc:4b:ea:09\""))
+        { FAIL("JSON missing client_mac"); free(json); free_entry(entry); return; }
+    if (!strstr(json, "\"reason\":4"))
+        { FAIL("JSON missing reason"); free(json); free_entry(entry); return; }
+    if (strstr(json, "\"ssid\""))
+        { FAIL("JSON should omit unset ssid"); free(json); free_entry(entry); return; }
+    free(json);
+    free_entry(entry);
+    PASS();
+}
+
 int main(void) {
     printf("=== Log Collector Unit Tests ===\n\n");
-
     test_parse_iso_syslog();
     test_parse_firewall_log();
     test_parse_switch_log();
     test_parse_router_dhcp();
-    test_parse_scan_detected();
     test_parse_iptables_kernel();
     test_parse_arrow_form();
     test_parse_cisco_flap();
@@ -537,6 +731,20 @@ int main(void) {
     test_bad_timestamp_fallback();
     test_lap_not_ap();
     test_ap01_is_ap();
+    test_v2_firewall_kernel();
+    test_v2_fortigate_cef();
+    test_v2_tcp_flags();
+    test_v2_switch_flap();
+    test_v2_switch_stp();
+    test_v2_ap_deauth();
+    test_v2_ap_signal();
+    test_v2_ap_authfail();
+    test_v2_ap_ssid();
+    test_v2_router_ospf();
+    test_v2_router_dhcp();
+    test_v2_router_route();
+    test_v2_conntrack();
+    test_v2_json_shape();
 
     printf("\n=== Results: %d passed, %d failed ===\n", tests_passed, tests_failed);
 

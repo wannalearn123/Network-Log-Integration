@@ -46,7 +46,7 @@ def _prune_last_insert():
 
 def merge_signature(rule_hits, ml_severity):
     parts = tuple(sorted(
-        (h.get("type", "?"), str(h.get("src_ip", "-")),
+        (h.get("type", "?"), str(h.get("entity") or h.get("src_ip") or "-"),
          len(str(h.get("description", ""))) // 20)
         for h in rule_hits
     ))
@@ -72,8 +72,9 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
     # Layer 1: Rule hits
     for hit in rule_hits:
         descriptions.append(f"[RULE] {hit['description']}")
-        if hit.get("src_ip"):
-            affected_ips.add(str(hit["src_ip"]))
+        ent = hit.get("entity") or hit.get("src_ip")
+        if ent:
+            affected_ips.add(str(ent))
         if SEV_RANK.get(hit["severity"], 0) > SEV_RANK[max_severity]:
             max_severity = hit["severity"]
 

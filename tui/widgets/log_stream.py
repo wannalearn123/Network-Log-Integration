@@ -13,7 +13,7 @@ class LogStream(DataTable):
     def on_mount(self):
         self.add_columns(
             "Time", "Device", "Type", "Event",
-            "Src IP", "Dst IP", "Proto", "Port",
+            "Src IP", "Entity", "Proto", "Port",
         )
         self.cursor_type = "row"
 
@@ -27,16 +27,32 @@ class LogStream(DataTable):
             device = row[2] or ""
             event = row[3] or ""
             src_ip = str(row[4]) if row[4] else ""
-            dst_ip = str(row[5]) if row[5] else ""
+            entity = str(row[8]) if len(row) > 8 and row[8] else src_ip
             proto = row[6] or ""
             port = str(row[7]) if row[7] else ""
-            self.add_row(ts, hostname, device, event, src_ip, dst_ip, proto, port,
+            self.add_row(ts, hostname, device, event, src_ip, entity, proto, port,
                          key=f"log-{i}")
-            self._rows.append({
+            detail = {
                 "time": row[0].strftime("%Y-%m-%d %H:%M:%S") if row[0] else "",
                 "device": hostname,
+                "type": device,
+                "event": event,
                 "src_ip": src_ip,
-                "dst_ip": dst_ip,
+                "dst_ip": str(row[5]) if row[5] else "",
                 "proto": proto,
                 "port": port,
-            })
+                "entity": entity,
+            }
+            # v2 detail fields (indices 9..28 of SQL_LOGS); stored for the modal.
+            v2_keys = (
+                "src_port", "action", "tcp_flags", "mac", "vlan_id",
+                "ifname", "peer_ifname", "stp_root", "client_mac", "ssid",
+                "radio", "reason", "signal_dbm", "tx_rate_mbps",
+                "eap_status", "ospf_nbr", "gateway", "route_dst",
+                "dhcp_mac", "conntrack_count",
+            )
+            for j, key in enumerate(v2_keys):
+                idx = 9 + j
+                if idx < len(row) and row[idx] is not None:
+                    detail[key] = str(row[idx])
+            self._rows.append(detail)

@@ -19,7 +19,7 @@ class LogDetailScreen(ModalScreen):
     #log-card {
         width: 60;
         height: auto;
-        max-height: 20;
+        max-height: 30;
         border: solid $accent;
         padding: 1 2;
     }
@@ -38,11 +38,31 @@ class LogDetailScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="log-card"):
+            yield Static(f"[bold]Time:[/]   {self.row.get('time', '')}")
             yield Static(f"[bold]Device:[/] {self.row.get('device', '')}")
-            yield Static(f"[bold]Src IP:[/]  {self.row.get('src_ip', '')}")
-            yield Static(f"[bold]Dst IP:[/]  {self.row.get('dst_ip', '')}")
-            yield Static(f"[bold]Proto:[/]  {self.row.get('proto', '')}")
-            yield Static(f"[bold]Port:[/]   {self.row.get('port', '')}")
+            yield Static(f"[bold]Event:[/]  {self.row.get('event', '')}")
+            # Entity duplicates Src/Dst IP on firewall rows (COALESCE falls
+            # through to dst_ip) — show it only when it adds information.
+            entity = self.row.get("entity", "") or ""
+            if entity and entity not in (self.row.get("src_ip", ""), self.row.get("dst_ip", "")):
+                yield Static(f"[bold]Entity:[/] {entity}")
+            for label, key in (
+                ("Src IP", "src_ip"), ("Dst IP", "dst_ip"),
+                ("Proto", "proto"), ("Port", "port"),
+                ("Action", "action"), ("Flags", "tcp_flags"),
+                ("MAC", "mac"), ("VLAN", "vlan_id"),
+                ("Iface", "ifname"), ("Peer", "peer_ifname"),
+                ("STP root", "stp_root"), ("SSID", "ssid"),
+                ("Radio", "radio"), ("Reason", "reason"),
+                ("Signal", "signal_dbm"), ("Tx rate", "tx_rate_mbps"),
+                ("EAP", "eap_status"), ("OSPF nbr", "ospf_nbr"),
+                ("Gateway", "gateway"), ("Route", "route_dst"),
+                ("DHCP MAC", "dhcp_mac"), ("Conntrack", "conntrack_count"),
+                ("Src port", "src_port"), ("Client MAC", "client_mac"),
+            ):
+                val = self.row.get(key, "")
+                if val not in ("", None):
+                    yield Static(f"[bold]{label}:[/] {val}")
 
 
 # Card showing a single anomaly entry's details.

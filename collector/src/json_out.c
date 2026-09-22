@@ -49,12 +49,21 @@ char* to_json(const log_entry_t* entry) {
 
     // Single allocation: fixed overhead + worst-case escaped lengths, capped at 8MB
     // (1MB line * 6x \uXXXX escaping + overhead). Larger lines are dropped, counted upstream.
-    size_t need = 256
+    size_t need = 768
         + json_escaped_len(entry->timestamp) + json_escaped_len(entry->hostname)
         + json_escaped_len(entry->facility) + json_escaped_len(entry->severity)
         + json_escaped_len(entry->device_type) + json_escaped_len(entry->event)
         + json_escaped_len(entry->src_ip) + json_escaped_len(entry->dst_ip)
         + json_escaped_len(entry->proto) + 16 /* dst_port */
+        + json_escaped_len(entry->action) + json_escaped_len(entry->tcp_flags)
+        + json_escaped_len(entry->mac) + json_escaped_len(entry->ifname)
+        + json_escaped_len(entry->peer_ifname) + json_escaped_len(entry->stp_root)
+        + json_escaped_len(entry->client_mac) + json_escaped_len(entry->ssid)
+        + json_escaped_len(entry->radio) + json_escaped_len(entry->eap_status)
+        + json_escaped_len(entry->ospf_nbr) + json_escaped_len(entry->gateway)
+        + json_escaped_len(entry->route_dst) + json_escaped_len(entry->dhcp_mac)
+        + 16 * 8 /* optional ints: v, src_port, dst_port, vlan_id, reason,
+                     signal_dbm, tx_rate_mbps, conntrack_count */
         + json_escaped_len(raw) + 32;
     if (need > 8 * 1024 * 1024) {
         fprintf(stderr, "collector: JSON over 8MB, dropping line\n");
@@ -80,7 +89,11 @@ char* to_json(const log_entry_t* entry) {
         APPEND_FMT("%s", "\""); \
     } while (0)
 
-    APPEND_FMT("%s", "{");
+#define APPEND_INT(key, val) do { \
+        APPEND_FMT(",\"%s\":%d", key, (val)); \
+    } while (0)
+
+    APPEND_FMT("%s", "{\"v\":2,");
     APPEND_STR("timestamp", entry->timestamp);
     APPEND_FMT("%s", ",");
     APPEND_STR("hostname", entry->hostname);
@@ -107,6 +120,80 @@ char* to_json(const log_entry_t* entry) {
     }
     if (entry->dst_port >= 0) {
         APPEND_FMT(",\"dst_port\":%d", entry->dst_port);
+    }
+    if (entry->src_port > 0) {
+        APPEND_FMT(",\"src_port\":%d", entry->src_port);
+    }
+    if (entry->action[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("action", entry->action);
+    }
+    if (entry->tcp_flags[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("tcp_flags", entry->tcp_flags);
+    }
+    if (entry->mac[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("mac", entry->mac);
+    }
+    if (entry->vlan_id > 0) {
+        APPEND_INT("vlan_id", entry->vlan_id);
+    }
+    if (entry->ifname[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("ifname", entry->ifname);
+    }
+    if (entry->peer_ifname[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("peer_ifname", entry->peer_ifname);
+    }
+    if (entry->stp_root[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("stp_root", entry->stp_root);
+    }
+    if (entry->client_mac[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("client_mac", entry->client_mac);
+    }
+    if (entry->ssid[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("ssid", entry->ssid);
+    }
+    if (entry->radio[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("radio", entry->radio);
+    }
+    if (entry->reason >= 0) {
+        APPEND_INT("reason", entry->reason);
+    }
+    if (entry->signal_dbm != UNSET_INT) {
+        APPEND_INT("signal_dbm", entry->signal_dbm);
+    }
+    if (entry->tx_rate_mbps > 0) {
+        APPEND_INT("tx_rate_mbps", entry->tx_rate_mbps);
+    }
+    if (entry->eap_status[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("eap_status", entry->eap_status);
+    }
+    if (entry->ospf_nbr[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("ospf_nbr", entry->ospf_nbr);
+    }
+    if (entry->gateway[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("gateway", entry->gateway);
+    }
+    if (entry->route_dst[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("route_dst", entry->route_dst);
+    }
+    if (entry->dhcp_mac[0]) {
+        APPEND_FMT("%s", ",");
+        APPEND_STR("dhcp_mac", entry->dhcp_mac);
+    }
+    if (entry->conntrack_count >= 0) {
+        APPEND_INT("conntrack_count", entry->conntrack_count);
     }
 
     APPEND_FMT("%s", ",");

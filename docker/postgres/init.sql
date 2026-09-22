@@ -15,6 +15,27 @@ CREATE TABLE IF NOT EXISTS logs (
     dst_ip        INET,
     proto         VARCHAR(8),
     dst_port      INTEGER,
+    -- v2 fields (collector {"v":2}); all nullable, omitted when unset
+    src_port      INTEGER,
+    action        VARCHAR(16),
+    tcp_flags     VARCHAR(8),
+    mac           VARCHAR(24),
+    vlan_id       INTEGER,
+    ifname        VARCHAR(40),
+    peer_ifname   VARCHAR(40),
+    stp_root      VARCHAR(40),
+    client_mac    VARCHAR(24),
+    ssid          VARCHAR(32),
+    radio         VARCHAR(16),
+    reason        INTEGER,
+    signal_dbm    INTEGER,
+    tx_rate_mbps  INTEGER,
+    eap_status    VARCHAR(16),
+    ospf_nbr      INET,
+    gateway       INET,
+    route_dst     VARCHAR(46),
+    dhcp_mac      VARCHAR(24),
+    conntrack_count INTEGER,
     raw_line      TEXT,
     parsed_at     TIMESTAMPTZ DEFAULT NOW()
 );
@@ -44,6 +65,8 @@ CREATE INDEX idx_logs_severity      ON logs (severity);
 CREATE INDEX idx_logs_event         ON logs (event);
 CREATE INDEX idx_logs_src_ip        ON logs (src_ip);
 CREATE INDEX idx_logs_dst_ip        ON logs (dst_ip);
+CREATE INDEX idx_logs_client_mac    ON logs (client_mac);
+CREATE INDEX idx_logs_mac           ON logs (mac);
 
 CREATE INDEX idx_anomalies_timestamp ON anomalies (timestamp);
 CREATE INDEX idx_anomalies_severity  ON anomalies (severity);

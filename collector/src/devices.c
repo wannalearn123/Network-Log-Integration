@@ -191,6 +191,117 @@ static void extract_proto_generic(const char *msg, const char *low,
     }
 }
 
+// Case-insensitive substring search, returns pointer into hay or NULL.
+static const char *find_ci(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    if (!n) return NULL;
+    for (const char *p = hay; *p; p++) {
+        size_t i = 0;
+        for (; i < n && p[i]; i++) {
+            if (tolower((unsigned char)p[i]) != tolower((unsigned char)needle[i]))
+                break;
+        }
+        if (i == n) return p;
+    }
+    return NULL;
+}
+
+// Copy a token (alnum + '/' + '.') from src into out. Returns length or 0.
+static int copy_token(const char *src, char *out, int out_size) {
+    int i = 0;
+    while (src[i] && (isalnum((unsigned char)src[i]) || src[i] == '/' || src[i] == '.')
+            && i < out_size - 1) {
+        out[i] = src[i];
+        i++;
+    }
+    out[i] = '\0';
+    return i;
+}
+
+// Colon-form MAC xx:xx:xx:xx:xx:xx (17 chars) at s.
+static int is_mac_colon(const char *s) {
+    for (int g = 0; g < 6; g++) {
+        if (!isxdigit((unsigned char)s[0]) || !isxdigit((unsigned char)s[1]))
+            return 0;
+        if (g < 5) {
+            if (s[2] != ':') return 0;
+            s += 3;
+        }
+    }
+    return 1;
+}
+
+// Cisco dot-form MAC xxxx.xxxx.xxxx (14 chars) at s.
+static int is_mac_dot(const char *s) {
+    for (int g = 0; g < 3; g++) {
+        for (int i = 0; i < 4; i++) {
+            if (!isxdigit((unsigned char)s[i])) return 0;
+        }
+        if (g < 2) {
+            if (s[4] != '.') return 0;
+            s += 5;
+        }
+    }
+    return 1;
+}
+
+// First MAC (colon or dot form) in message. Returns 1 if found.
+static int extract_first_mac(const char *msg, char *out, int out_size) {
+    for (const char *p = msg; *p; p++) {
+        char before = (p == msg) ? ' ' : p[-1];
+        if (is_mac_colon(p) && !isxdigit((unsigned char)before) && before != ':') {
+            char after = p[17];
+            if (!isxdigit((unsigned char)after) && after != ':') {
+                snprintf(out, out_size, "%.17s", p);
+                return 1;
+            }
+        }
+        if (is_mac_dot(p) && !isxdigit((unsigned char)before) && before != '.') {
+            char after = p[14];
+            if (!isxdigit((unsigned char)after) && after != '.') {
+                snprintf(out, out_size, "%.14s", p);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+// Find first interface token in low (lowercased copy), copy original case
+// from msg at the same offset. Returns 1 if found.
+static int find_iface_at(const char *msg, const char *low, int from_off,
+                         char *out, int out_size) {
+    for (const char *p = low + from_off; *p; p++) {
+        char before = (p == low) ? ' ' : p[-1];
+        if (isalnum((unsigned char)before) || before == '-' || before == '_')
+            continue;
+        int n = -1;
+        if (strncmp(p, "gigabitethernet", 15) == 0 && isdigit((unsigned char)p[15]))
+            n = 15;
+        else if (p[0] == 'g' && p[1] == 'i' && isdigit((unsigned char)p[2]))
+            n = 2;
+        else if (strncmp(p, "ether", 5) == 0 && isdigit((unsigned char)p[5]))
+            n = 5;
+        else if (strncmp(p, "eth", 3) == 0 && isdigit((unsigned char)p[3]))
+            n = 3;
+        else if (strncmp(p, "wlan", 4) == 0 && isdigit((unsigned char)p[4]))
+            n = 4;
+        else if (p[0] == 'b' && p[1] == 'r' && isdigit((unsigned char)p[2]))
+            n = 2;
+        if (n < 0) continue;
+        const char *s = msg + (p - low);
+        int i = 0;
+        while (s[i] && (isalnum((unsigned char)s[i]) || s[i] == '/') && i < out_size - 1) {
+            out[i] = s[i];
+            i++;
+        }
+        if (i == 0) continue;
+        out[i] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
 void detect_device_type(log_entry_t* entry) {
     if (!entry->hostname[0]) {
         snprintf(entry->device_type, sizeof(entry->device_type), "unknown");
@@ -218,8 +329,6 @@ void extract_fields(log_entry_t* entry) {
     if (!low) return;
     to_lower_copy(msg, low, msg_len + 1);
 
-    entry->dst_port = -1;
-
     // Structured k=v extraction (iptables / FortiGate / MikroTik aliases).
     extract_kv(msg, "SRC", entry->src_ip, sizeof(entry->src_ip));
     extract_kv(msg, "DST", entry->dst_ip, sizeof(entry->dst_ip));
@@ -237,6 +346,187 @@ void extract_fields(log_entry_t* entry) {
     if (colon) *colon = '\0';
     extract_proto_generic(msg, low, entry->proto, sizeof(entry->proto));
     entry->dst_port = extract_port_generic(msg, low);
+
+    // v2 fields: source port (SPT=/spt=).
+    {
+        int v = extract_kv_int(msg, "SPT");
+        if (v > 0 && v <= 65535) entry->src_port = v;
+    }
+
+    // v2: action (allow|deny|reject|close), normalized.
+    {
+        char buf[16];
+        if (extract_kv(msg, "act", buf, sizeof(buf))) {
+            char ab[16];
+            to_lower_copy(buf, ab, sizeof(ab));
+            if (strcmp(ab, "accept") == 0 || strcmp(ab, "allow") == 0)
+                snprintf(entry->action, sizeof(entry->action), "allow");
+            else if (strcmp(ab, "drop") == 0 || strcmp(ab, "deny") == 0)
+                snprintf(entry->action, sizeof(entry->action), "deny");
+            else if (strcmp(ab, "reject") == 0)
+                snprintf(entry->action, sizeof(entry->action), "reject");
+            else if (strcmp(ab, "close") == 0)
+                snprintf(entry->action, sizeof(entry->action), "close");
+            else
+                snprintf(entry->action, sizeof(entry->action), "%.15s", ab);
+        } else if (contains_ci(low, "[fw allow]")) {
+            snprintf(entry->action, sizeof(entry->action), "allow");
+        } else if (contains_ci(low, "[fw drop]") || contains_ci(low, "[fw deny")) {
+            snprintf(entry->action, sizeof(entry->action), "deny");
+        } else if (contains_ci(low, "[fw reject")) {
+            snprintf(entry->action, sizeof(entry->action), "reject");
+        } else if (contains_word(low, "drop") || contains_word(low, "deny")) {
+            snprintf(entry->action, sizeof(entry->action), "deny");
+        } else if (contains_word(low, "reject")) {
+            snprintf(entry->action, sizeof(entry->action), "reject");
+        } else if (contains_word(low, "allow") || contains_word(low, "accept")) {
+            snprintf(entry->action, sizeof(entry->action), "allow");
+        }
+    }
+
+    // v2: TCP flags (SYN|ACK|FIN|RST|URG), first match wins.
+    {
+        const char *flags[] = {"syn", "ack", "fin", "rst", "urg"};
+        const char *names[] = {"SYN", "ACK", "FIN", "RST", "URG"};
+        for (int w = 0; w < 5; w++) {
+            if (contains_word(low, flags[w])) {
+                snprintf(entry->tcp_flags, sizeof(entry->tcp_flags), "%s", names[w]);
+                break;
+            }
+        }
+    }
+
+    // v2: MAC / client MAC / DHCP MAC (first MAC in line, routed by context).
+    {
+        char mbuf[24];
+        if (extract_first_mac(msg, mbuf, sizeof(mbuf))) {
+            if (contains_ci(low, "dhcpack") ||
+                    (contains_ci(low, "dhcp") && contains_ci(low, "assigned"))) {
+                snprintf(entry->dhcp_mac, sizeof(entry->dhcp_mac), "%s", mbuf);
+            } else if (strcmp(entry->device_type, "ap") == 0) {
+                snprintf(entry->client_mac, sizeof(entry->client_mac), "%s", mbuf);
+            } else if (strcmp(entry->device_type, "switch") == 0) {
+                snprintf(entry->mac, sizeof(entry->mac), "%s", mbuf);
+            }
+        }
+    }
+
+    // v2: VLAN id ("vlan 6", "VLAN1", "in vlan 10").
+    {
+        const char *vp = find_ci(msg, "vlan");
+        if (vp) {
+            vp += 4;
+            while (*vp == ' ' || *vp == '\t' || *vp == '=') vp++;
+            int v = atoi(vp);
+            if (v > 0 && v <= 4094) entry->vlan_id = v;
+        }
+    }
+
+    // v2: interface name + flap peer ("between port A and port B").
+    {
+        if (find_iface_at(msg, low, 0, entry->ifname, sizeof(entry->ifname))) {
+            const char *ap = find_ci(low, " and port ");
+            if (!ap) ap = find_ci(low, " and ");
+            if (ap) {
+                int off = (int)(ap - low);
+                find_iface_at(msg, low, off, entry->peer_ifname, sizeof(entry->peer_ifname));
+            }
+        }
+        // v2: STP new root ("new root Gi0/5").
+        const char *rp = find_ci(low, "new root ");
+        if (rp) {
+            copy_token(msg + (rp - low) + 9, entry->stp_root, sizeof(entry->stp_root));
+        }
+    }
+
+    // v2: AP radio (wlan0/wlan1).
+    {
+        const char *wp = find_ci(low, "wlan");
+        if (wp && isdigit((unsigned char)wp[4])) {
+            const char *s = msg + (wp - low);
+            int i = 0;
+            while (s[i] && isalnum((unsigned char)s[i]) && i < (int)sizeof(entry->radio) - 1) {
+                entry->radio[i] = s[i];
+                i++;
+            }
+            entry->radio[i] = '\0';
+        }
+    }
+
+    // v2: AP SSID ("(SSID Campus)" / "SSID=foo").
+    {
+        const char *sp = find_ci(msg, "ssid");
+        if (sp) {
+            sp += 4;
+            while (*sp == ' ' || *sp == '\t' || *sp == '=') sp++;
+            int i = 0;
+            while (sp[i] && sp[i] != ')' && sp[i] != '\n' && sp[i] != '\r'
+                    && i < (int)sizeof(entry->ssid) - 1) {
+                entry->ssid[i] = sp[i];
+                i++;
+            }
+            while (i > 0 && (entry->ssid[i-1] == ' ' || entry->ssid[i-1] == '\t')) i--;
+            entry->ssid[i] = '\0';
+        }
+    }
+
+    // v2: AP reason code (reason=3 / reason=4).
+    {
+        int v = extract_kv_int(msg, "reason");
+        if (v >= 0) entry->reason = v;
+    }
+
+    // v2: AP signal + tx rate (signal=67 dBm, tx_rate=29Mbps).
+    {
+        int v = extract_kv_int(msg, "signal");
+        if (v != -1) entry->signal_dbm = v;
+        v = extract_kv_int(msg, "tx_rate");
+        if (v > 0) entry->tx_rate_mbps = v;
+    }
+
+    // v2: AP EAP/auth outcome.
+    if (strcmp(entry->device_type, "ap") == 0) {
+        if (contains_ci(low, "auth_failed") || contains_word(low, "failed") ||
+                contains_ci(low, "invalid credentials") ||
+                contains_ci(low, "authentication error") ||
+                contains_ci(low, "ap-sta-failed")) {
+            snprintf(entry->eap_status, sizeof(entry->eap_status), "failed");
+        } else if (contains_ci(low, "authentication success") ||
+                contains_ci(low, "handshake completed") ||
+                contains_ci(low, "auth success")) {
+            snprintf(entry->eap_status, sizeof(entry->eap_status), "success");
+        }
+    }
+
+    // v2: router OSPF neighbor ("Nbr 172.20.0.9").
+    {
+        const char *np = find_ci(low, "nbr ");
+        if (np) {
+            copy_token(msg + (np - low) + 4, entry->ospf_nbr, sizeof(entry->ospf_nbr));
+        }
+    }
+
+    // v2: router gateway= and dst-address=.
+    {
+        char gbuf[46];
+        if (extract_kv(msg, "gateway", gbuf, sizeof(gbuf)))
+            snprintf(entry->gateway, sizeof(entry->gateway), "%.45s", gbuf);
+        if (extract_kv(msg, "dst-address", gbuf, sizeof(gbuf)))
+            snprintf(entry->route_dst, sizeof(entry->route_dst), "%.45s", gbuf);
+    }
+
+    // v2: connection tracking count ("tracking: 5 entries" / "conntrack: 5 ...").
+    {
+        const char *cp = find_ci(low, "tracking:");
+        if (!cp) cp = find_ci(low, "conntrack:");
+        if (cp) {
+            cp = strchr(cp, ':');
+            if (cp) {
+                int v = atoi(cp + 1);
+                if (v >= 0) entry->conntrack_count = v;
+            }
+        }
+    }
 
     // Fallback: positional IPs.
     if (!entry->src_ip[0] && !entry->dst_ip[0]) {
@@ -278,15 +568,11 @@ void extract_fields(log_entry_t* entry) {
             snprintf(entry->dst_ip, sizeof(entry->dst_ip), "%s", ip1);
     }
 
-    // Event classification (attack-specific first for rules_engine/ml_engine visibility).
+    // Event classification (single-line keywords only; multi-event attacks
+    // like scans / brute force / DDoS are detected downstream by
+    // pipeline/rules_engine.py rate counting, not here).
     const char *ev = NULL;
-    if (contains_ci(low, "scan detected") || contains_ci(low, "port scan"))
-        ev = "scan_detected";
-    else if (contains_ci(low, "brute force"))
-        ev = "brute_force";
-    else if (contains_ci(low, "ddos") || contains_ci(low, "syn flood"))
-        ev = "ddos_flood";
-    else if (contains_ci(low, "ap-sta-failed") || contains_ci(low, "invalid_auth") ||
+    if (contains_ci(low, "ap-sta-failed") || contains_ci(low, "invalid_auth") ||
              contains_ci(low, "authentication error") || contains_ci(low, "handshake failed") ||
              (contains_ci(low, "failed") && contains_ci(low, "auth")))
         ev = "auth_failure";
