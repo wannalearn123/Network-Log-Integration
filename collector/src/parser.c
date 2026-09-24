@@ -25,14 +25,12 @@ log_entry_t* parse_syslog_line(const char* line) {
     parse_hostname(entry, &p);
     skip_tag(&p);
 
-    /* calloc zeroes everything; numeric optionals use UNSET_INT sentinel. */
-    entry->src_port = UNSET_INT;
+    // calloc zeroes everything; numeric optionals use UNSET_INT sentinel. 
     entry->vlan_id = UNSET_INT;
     entry->reason = UNSET_INT;
     entry->signal_dbm = UNSET_INT;
     entry->tx_rate_mbps = UNSET_INT;
     entry->conntrack_count = UNSET_INT;
-    entry->dst_port = UNSET_INT;
 
     detect_device_type(entry);
     extract_fields(entry);

@@ -17,8 +17,7 @@ typedef struct {
     char dst_ip[46];
     char proto[8];
     int  dst_port;
-
-    int  src_port;          /* SPT= / spt= */
+	int  src_port;          /* SPT= / spt= */
     char action[16];        /* allow|drop|deny|reject|close|accept */
     char tcp_flags[16];     /* SYN|ACK|FIN|RST|URG */
     char mac[24];           /* switch: flapping/learned MAC */

@@ -205,8 +205,8 @@ void test_parse_arrow_form(void) {
         { FAIL("src_ip mismatch"); free_entry(entry); return; }
     if (strcmp(entry->dst_ip, "172.20.0.4") != 0)
         { FAIL("dst_ip mismatch"); free_entry(entry); return; }
-    if (entry->dst_port != 53)
-        { FAIL("dst_port should be 53"); free_entry(entry); return; }
+    if (entry->dst_port != -1)
+        { FAIL("dst_port should be -1 (arrow fallback disabled)"); free_entry(entry); return; }
 
     free_entry(entry);
     PASS();

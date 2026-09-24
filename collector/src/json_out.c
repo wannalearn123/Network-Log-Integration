@@ -54,16 +54,14 @@ char* to_json(const log_entry_t* entry) {
         + json_escaped_len(entry->facility) + json_escaped_len(entry->severity)
         + json_escaped_len(entry->device_type) + json_escaped_len(entry->event)
         + json_escaped_len(entry->src_ip) + json_escaped_len(entry->dst_ip)
-        + json_escaped_len(entry->proto) + 16 /* dst_port */
-        + json_escaped_len(entry->action) + json_escaped_len(entry->tcp_flags)
-        + json_escaped_len(entry->mac) + json_escaped_len(entry->ifname)
-        + json_escaped_len(entry->peer_ifname) + json_escaped_len(entry->stp_root)
-        + json_escaped_len(entry->client_mac) + json_escaped_len(entry->ssid)
-        + json_escaped_len(entry->radio) + json_escaped_len(entry->eap_status)
-        + json_escaped_len(entry->ospf_nbr) + json_escaped_len(entry->gateway)
-        + json_escaped_len(entry->route_dst) + json_escaped_len(entry->dhcp_mac)
-        + 16 * 8 /* optional ints: v, src_port, dst_port, vlan_id, reason,
-                     signal_dbm, tx_rate_mbps, conntrack_count */
+        + json_escaped_len(entry->proto) + json_escaped_len(entry->action) 
+		+ json_escaped_len(entry->tcp_flags) + json_escaped_len(entry->mac) 
+		+ json_escaped_len(entry->ifname) + json_escaped_len(entry->peer_ifname) 
+		+ json_escaped_len(entry->stp_root) + json_escaped_len(entry->client_mac) 
+		+ json_escaped_len(entry->ssid) + json_escaped_len(entry->radio) 
+		+ json_escaped_len(entry->eap_status) + json_escaped_len(entry->ospf_nbr) 
+		+ json_escaped_len(entry->gateway) + json_escaped_len(entry->route_dst) 
+		+ json_escaped_len(entry->dhcp_mac) + 16 * 8 /* optional ints: v, src_port, dst_port, vlan_id, reason, signal_dbm, tx_rate_mbps, conntrack_count */
         + json_escaped_len(raw) + 32;
     if (need > 8 * 1024 * 1024) {
         fprintf(stderr, "collector: JSON over 8MB, dropping line\n");

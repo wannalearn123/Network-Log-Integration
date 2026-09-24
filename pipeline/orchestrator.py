@@ -15,15 +15,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from pipeline.ingest import run_ingest
 from pipeline.anomaly_detector import start_detector
 
-
 TAIL_POLL_INTERVAL = 0.1  # 100ms
 COLLECTOR_BIN = "./collector/log_collector"
 
 running = True
 _stdin_lock = threading.Lock()
 
+# Tail a file from the end, feed new lines to collector stdin.
 
-    # Tail a file from the end, feed new lines to collector stdin.
+
 def tail_file(filepath, stdin_pipe):
     with open(filepath, "r") as f:
         f.seek(0, 2)  # seek to end
@@ -72,7 +72,8 @@ def main():
 
     # Exit if the collector binary is missing.
     if not Path(COLLECTOR_BIN).exists():
-        print(f"[ERROR] Missing {COLLECTOR_BIN} — run: make -C collector", file=sys.stderr)
+        print(f"[ERROR] Missing {
+              COLLECTOR_BIN} — run: make -C collector", file=sys.stderr)
         sys.exit(1)
 
     print(f"[INFO] Found {len(log_files)} log files:", file=sys.stderr)
@@ -116,7 +117,8 @@ def main():
     failed = False
     while running:
         if collector.poll() is not None:
-            print(f"[FATAL] C collector exited ({collector.returncode}) — stopping", file=sys.stderr)
+            print(f"[FATAL] C collector exited ({
+                  collector.returncode}) — stopping", file=sys.stderr)
             running = False
             failed = True
             break

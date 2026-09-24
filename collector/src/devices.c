@@ -11,8 +11,14 @@ static void to_lower_copy(const char *src, char *dst, size_t n) {
     dst[i] = '\0';
 }
 
+static void to_upper_copy(const char *src, char *dst, size_t n) {
+    size_t i;
+    for (i = 0; src[i] && i + 1 < n; i++)
+        dst[i] = toupper((unsigned char)src[i]);
+    dst[i] = '\0';
+}
+
 // Device type detection from hostname.
-// Token match: split on .-_, match exactly or followed by digits.
 static int host_has_token(const char *host_lower, const char *tok) {
     size_t tlen = strlen(tok);
     const char *p = host_lower;
@@ -50,8 +56,7 @@ static const char *find_kv_key(const char *msg, const char *key) {
 }
 
 static int is_value_end(char c) {
-    return c == '\0' || c == ' ' || c == '\n' || c == '\r' || c == '\t' ||
-           c == ',' || c == ';' || c == ']' || c == ')' || c == '"' || c == '\'';
+    return c == '\0' || c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == ',' || c == ';' || c == ']' || c == ')' || c == '"' || c == '\'';
 }
 
 static int extract_kv(const char* msg, const char* key, char* out, int out_size) {
@@ -72,10 +77,6 @@ static int extract_kv_int(const char* msg, const char* key) {
         return atoi(buf);
     }
     return -1;
-}
-
-static int contains_ci(const char *haystack_low, const char *needle_low) {
-    return strstr(haystack_low, needle_low) != NULL;
 }
 
 // Whole-word match to avoid false positives like "accept" containing "cp".
@@ -128,47 +129,102 @@ static int collect_ips(const char *msg, char ip0[46], char ip1[46]) {
     return found;
 }
 
-// Generic port extraction: DPT=/dport/dstport > "port N" > ":PORT" after "->".
-static int extract_port_generic(const char *msg, const char *low) {
-    int v = extract_kv_int(msg, "DPT");
-    if (v > 0 && v <= 65535) return v;
-    v = extract_kv_int(msg, "DPORT");
-    if (v > 0 && v <= 65535) return v;
-    v = extract_kv_int(msg, "DSTPORT"); // FortiGate dstport=
-    if (v > 0 && v <= 65535) return v;
-    v = extract_kv_int(msg, "DST-PORT"); // MikroTik dst-port=
-    if (v > 0 && v <= 65535) return v;
+// Port role selector for extract_port_generic.
+enum { PORT_DST = 0, PORT_SRC = 1 };
 
-    const char *pp = strstr(low, "port ");
-    if (pp) {
-        pp += 5;
-        while (*pp == ' ') pp++;
-        int p2 = atoi(pp);
-        if (p2 > 0 && p2 <= 65535) return p2;
+// Generic port extraction: dst keys (DPT/DPORT/DSTPORT/DST-PORT) when
+static int extract_port_generic(const char *msg, int want_src) {
+    static const char *dst_keys[] = {"DPT", "DPORT", "DSTPORT", "DST-PORT"};
+    static const char *src_keys[] = {"SPT"};
+    const char **keys;
+    size_t nkeys;
+    if (want_src == PORT_SRC) {
+        keys = src_keys;
+        nkeys = sizeof(src_keys) / sizeof(*src_keys);
+    } else {
+        keys = dst_keys;
+        nkeys = sizeof(dst_keys) / sizeof(*dst_keys);
+    }
+    for (size_t i = 0; i < nkeys; i++) {
+        int port = extract_kv_int(msg, keys[i]);
+        if (port > 0 && port <= 65535) return port;
     }
 
-    // ":PORT" after "->" (e.g. "a -> b:53")
-    const char *arrow = strstr(msg, "->");
-    if (arrow) {
-        const char *colon = strrchr(arrow, ':');
-        if (colon) {
-            int p2 = atoi(colon + 1);
-            if (p2 > 0 && p2 <= 65535) return p2;
-        }
-    }
+    // Disabled: no current generator emits "port N" numeric; "port " is followed
+    // by iface names (Gi0/3) and atoi would misfire. Re-enable if needed.
+    // const char *pp = strstr(low, "port ");
+    // if (pp) {
+    //     pp += 5;
+    //     while (*pp == ' ') pp++;
+    //     int p2 = atoi(pp);
+    //     if (p2 > 0 && p2 <= 65535) return p2;
+    // }
+
+    // Disabled: no current generator emits "-> host:port" with a port;
+    // NAT logs use "-> masqueraded via" (no colon-port). Re-enable if needed.
+    // // ":PORT" after "->" (e.g. "a -> b:53")
+    // const char *arrow = strstr(msg, "->");
+    // if (arrow) {
+    //     const char *colon = strrchr(arrow, ':');
+    //     if (colon) {
+    //         int p2 = atoi(colon + 1);
+    //         if (p2 > 0 && p2 <= 65535) return p2;
+    //     }
+    // }
     return -1;
 }
 
+// v2: action (allow|deny|reject|close), normalized.
+static void extract_action(char* out, const char *low, int out_size ) {
+    char buf[16];
+    if (extract_kv(low, "act", buf, sizeof(buf))) {
+        if (strcmp(buf, "accept") == 0 || strcmp(buf, "allow") == 0)
+            snprintf(out, out_size, "allow");
+        else if (strcmp(buf, "drop") == 0 || strcmp(buf, "deny") == 0)
+            snprintf(out, out_size, "deny");
+        else if (strcmp(buf, "reject") == 0)
+            snprintf(out, out_size, "reject");
+        else if (strcmp(buf, "close") == 0)
+            snprintf(out, out_size, "close");
+        else
+            snprintf(out, out_size, "%.15s", buf);
+    } else if ((strstr(low, "[fw allow]") != NULL)) {
+        snprintf(out, out_size, "allow");
+    } else if ((strstr(low, "[fw drop]") != NULL) || (strstr(low, "[fw deny") != NULL)) {
+        snprintf(out, out_size, "deny");
+    } else if ((strstr(low, "[fw reject") != NULL)) {
+        snprintf(out, out_size, "reject");
+    } else if (contains_word(low, "drop") || contains_word(low, "deny")) {
+        snprintf(out, out_size, "deny");
+    } else if (contains_word(low, "reject")) {
+        snprintf(out, out_size, "reject");
+    } else if (contains_word(low, "allow") || contains_word(low, "accept")) {
+        snprintf(out, out_size, "allow");
+    }
+}
+
+// v2: TCP flags (SYN|ACK|FIN|RST|URG), first match wins.
+static void extract_tcp_flags(char *out, const char *low, int out_size) {
+    const char *flags[] = {"syn", "ack", "fin", "rst", "urg"};
+    for (int w = 0; w < 5; w++) {
+        if (contains_word(low, flags[w])) {
+			char tmp[5];
+			to_upper_copy(flags[w], tmp, sizeof(tmp));
+            snprintf(out, out_size, "%s", tmp); 
+            break;
+        }
+    }
+}
+
 // Generic proto: PROTO= (name or number) > bare TCP/UDP/ICMP word.
-static void extract_proto_generic(const char *msg, const char *low,
-                                  char *out, int out_size) {
+static void extract_proto_generic(const char *msg, const char *low, char *out, int out_size) {
     char buf[16];
     if (extract_kv(msg, "PROTO", buf, sizeof(buf))) {
-        if (contains_ci(low, "proto=tcp") || strcmp(buf, "6") == 0)
+        if ((strstr(low, "proto=tcp") != NULL) || strcmp(buf, "6") == 0)
             snprintf(out, out_size, "TCP");
-        else if (contains_ci(low, "proto=udp") || strcmp(buf, "17") == 0)
+        else if ((strstr(low, "proto=udp") != NULL) || strcmp(buf, "17") == 0)
             snprintf(out, out_size, "UDP");
-        else if (contains_ci(low, "proto=icmp") || strcmp(buf, "1") == 0)
+        else if ((strstr(low, "proto=icmp") != NULL) || strcmp(buf, "1") == 0)
             snprintf(out, out_size, "ICMP");
         else
             snprintf(out, out_size, "%.7s", buf);
@@ -320,6 +376,139 @@ void detect_device_type(log_entry_t* entry) {
     else snprintf(entry->device_type, sizeof(entry->device_type), "other");
 }
 
+// v2: MAC / client MAC / DHCP MAC (first MAC in line, routed by context).
+static void extract_mac(log_entry_t *entry, const char *msg, const char *low) {
+    char mbuf[24];
+    if (extract_first_mac(msg, mbuf, sizeof(mbuf))) {
+        if ((strstr(low, "dhcpack") != NULL) ||
+                ((strstr(low, "dhcp") != NULL) && (strstr(low, "assigned") != NULL))) {
+            snprintf(entry->dhcp_mac, sizeof(entry->dhcp_mac), "%s", mbuf);
+        } else if (strcmp(entry->device_type, "ap") == 0) {
+            snprintf(entry->client_mac, sizeof(entry->client_mac), "%s", mbuf);
+        } else if (strcmp(entry->device_type, "switch") == 0) {
+            snprintf(entry->mac, sizeof(entry->mac), "%s", mbuf);
+        }
+    }
+}
+
+// v2: VLAN id ("vlan 6", "VLAN1", "in vlan 10").
+static void extract_vlan(int *out, const char *msg) {
+    const char *vp = find_ci(msg, "vlan");
+    if (vp) {
+        vp += 4;
+        while (*vp == ' ' || *vp == '\t' || *vp == '=') vp++;
+        int vlan = atoi(vp);
+        if (vlan > 0 && vlan <= 4094) *out = vlan;
+    }
+}
+
+// v2: interface name + flap peer ("between port A and port B") + STP new root.
+static void extract_iface(log_entry_t *entry, const char *msg, const char *low) {
+    if (find_iface_at(msg, low, 0, entry->ifname, sizeof(entry->ifname))) {
+        const char *ap = find_ci(low, " and port ");
+        if (!ap) ap = find_ci(low, " and ");
+        if (ap) {
+            int off = (int)(ap - low);
+            find_iface_at(msg, low, off, entry->peer_ifname, sizeof(entry->peer_ifname));
+        }
+    }
+    // v2: STP new root ("new root Gi0/5").
+    const char *rp = find_ci(low, "new root ");
+    if (rp) {
+        copy_token(msg + (rp - low) + 9, entry->stp_root, sizeof(entry->stp_root));
+    }
+}
+
+// v2: AP radio (wlan0/wlan1).
+static void extract_radio(char *out, const char *msg, const char *low, int out_size) {
+    const char *wp = find_ci(low, "wlan");
+    if (wp && isdigit((unsigned char)wp[4])) {
+        const char *s = msg + (wp - low);
+        int i = 0;
+        while (s[i] && isalnum((unsigned char)s[i]) && i < out_size - 1) {
+            out[i] = s[i];
+            i++;
+        }
+        out[i] = '\0';
+    }
+}
+
+// v2: AP SSID ("(SSID Campus)" / "SSID=foo").
+static void extract_ssid(char *out, const char *msg, int out_size) {
+    const char *sp = find_ci(msg, "ssid");
+    if (sp) {
+        sp += 4;
+        while (*sp == ' ' || *sp == '\t' || *sp == '=') sp++;
+        int i = 0;
+        while (sp[i] && sp[i] != ')' && sp[i] != '\n' && sp[i] != '\r'
+                && i < out_size - 1) {
+            out[i] = sp[i];
+            i++;
+        }
+        while (i > 0 && (out[i-1] == ' ' || out[i-1] == '\t')) i--;
+        out[i] = '\0';
+    }
+}
+
+// v2: AP reason code (reason=3 / reason=4).
+static void extract_reason(int *out, const char *msg) {
+    int code = extract_kv_int(msg, "reason");
+    if (code >= 0) *out = code;
+}
+
+// v2: AP signal + tx rate (signal=67 dBm, tx_rate=29Mbps).
+static void extract_signal(int *sig_out, int *rate_out, const char *msg) {
+    int sig = extract_kv_int(msg, "signal");
+    if (sig != -1) *sig_out = sig;
+    int rate = extract_kv_int(msg, "tx_rate");
+    if (rate > 0) *rate_out = rate;
+}
+
+// v2: AP EAP/auth outcome.
+static void extract_eap(char *out, int out_size, const char *device_type, const char *low) {
+    if (strcmp(device_type, "ap") != 0) return;
+    if ((strstr(low, "auth_failed") != NULL) || contains_word(low, "failed") ||
+            (strstr(low, "invalid credentials") != NULL) ||
+            (strstr(low, "authentication error") != NULL) ||
+            (strstr(low, "ap-sta-failed") != NULL)) {
+        snprintf(out, out_size, "failed");
+    } else if ((strstr(low, "authentication success") != NULL) ||
+            (strstr(low, "handshake completed") != NULL) ||
+            (strstr(low, "auth success") != NULL)) {
+        snprintf(out, out_size, "success");
+    }
+}
+
+// v2: router OSPF neighbor ("Nbr 172.20.0.9").
+static void extract_ospf(char *out, const char *msg, const char *low, int out_size) {
+    const char *np = find_ci(low, "nbr ");
+    if (np) {
+        copy_token(msg + (np - low) + 4, out, out_size);
+    }
+}
+
+// v2: router gateway= and dst-address=.
+static void extract_gateway(char *gw_out, int gw_size, char *dst_out, int dst_size, const char *msg) {
+    char gbuf[46];
+    if (extract_kv(msg, "gateway", gbuf, sizeof(gbuf)))
+        snprintf(gw_out, gw_size, "%.45s", gbuf);
+    if (extract_kv(msg, "dst-address", gbuf, sizeof(gbuf)))
+        snprintf(dst_out, dst_size, "%.45s", gbuf);
+}
+
+// v2: connection tracking count ("tracking: 5 entries" / "conntrack: 5 ...").
+static void extract_conntrack(int *out, const char *low) {
+    const char *cp = find_ci(low, "tracking:");
+    if (!cp) cp = find_ci(low, "conntrack:");
+    if (cp) {
+        cp = strchr(cp, ':');
+        if (cp) {
+            int count = atoi(cp + 1);
+            if (count >= 0) *out = count;
+        }
+    }
+}
+
 void extract_fields(log_entry_t* entry) {
     const char* msg = entry->raw_line;
     if (!msg || !msg[0]) return;
@@ -340,204 +529,39 @@ void extract_fields(log_entry_t* entry) {
         extract_kv(msg, "SRC-ADDRESS", entry->src_ip, sizeof(entry->src_ip));
     if (!entry->dst_ip[0])
         extract_kv(msg, "DST-ADDRESS", entry->dst_ip, sizeof(entry->dst_ip));
+
     char *colon = strchr(entry->src_ip, ':');
     if (colon) *colon = '\0';
     colon = strchr(entry->dst_ip, ':');
     if (colon) *colon = '\0';
+
     extract_proto_generic(msg, low, entry->proto, sizeof(entry->proto));
-    entry->dst_port = extract_port_generic(msg, low);
-
-    // v2 fields: source port (SPT=/spt=).
-    {
-        int v = extract_kv_int(msg, "SPT");
-        if (v > 0 && v <= 65535) entry->src_port = v;
-    }
-
-    // v2: action (allow|deny|reject|close), normalized.
-    {
-        char buf[16];
-        if (extract_kv(msg, "act", buf, sizeof(buf))) {
-            char ab[16];
-            to_lower_copy(buf, ab, sizeof(ab));
-            if (strcmp(ab, "accept") == 0 || strcmp(ab, "allow") == 0)
-                snprintf(entry->action, sizeof(entry->action), "allow");
-            else if (strcmp(ab, "drop") == 0 || strcmp(ab, "deny") == 0)
-                snprintf(entry->action, sizeof(entry->action), "deny");
-            else if (strcmp(ab, "reject") == 0)
-                snprintf(entry->action, sizeof(entry->action), "reject");
-            else if (strcmp(ab, "close") == 0)
-                snprintf(entry->action, sizeof(entry->action), "close");
-            else
-                snprintf(entry->action, sizeof(entry->action), "%.15s", ab);
-        } else if (contains_ci(low, "[fw allow]")) {
-            snprintf(entry->action, sizeof(entry->action), "allow");
-        } else if (contains_ci(low, "[fw drop]") || contains_ci(low, "[fw deny")) {
-            snprintf(entry->action, sizeof(entry->action), "deny");
-        } else if (contains_ci(low, "[fw reject")) {
-            snprintf(entry->action, sizeof(entry->action), "reject");
-        } else if (contains_word(low, "drop") || contains_word(low, "deny")) {
-            snprintf(entry->action, sizeof(entry->action), "deny");
-        } else if (contains_word(low, "reject")) {
-            snprintf(entry->action, sizeof(entry->action), "reject");
-        } else if (contains_word(low, "allow") || contains_word(low, "accept")) {
-            snprintf(entry->action, sizeof(entry->action), "allow");
-        }
-    }
-
-    // v2: TCP flags (SYN|ACK|FIN|RST|URG), first match wins.
-    {
-        const char *flags[] = {"syn", "ack", "fin", "rst", "urg"};
-        const char *names[] = {"SYN", "ACK", "FIN", "RST", "URG"};
-        for (int w = 0; w < 5; w++) {
-            if (contains_word(low, flags[w])) {
-                snprintf(entry->tcp_flags, sizeof(entry->tcp_flags), "%s", names[w]);
-                break;
-            }
-        }
-    }
-
-    // v2: MAC / client MAC / DHCP MAC (first MAC in line, routed by context).
-    {
-        char mbuf[24];
-        if (extract_first_mac(msg, mbuf, sizeof(mbuf))) {
-            if (contains_ci(low, "dhcpack") ||
-                    (contains_ci(low, "dhcp") && contains_ci(low, "assigned"))) {
-                snprintf(entry->dhcp_mac, sizeof(entry->dhcp_mac), "%s", mbuf);
-            } else if (strcmp(entry->device_type, "ap") == 0) {
-                snprintf(entry->client_mac, sizeof(entry->client_mac), "%s", mbuf);
-            } else if (strcmp(entry->device_type, "switch") == 0) {
-                snprintf(entry->mac, sizeof(entry->mac), "%s", mbuf);
-            }
-        }
-    }
-
-    // v2: VLAN id ("vlan 6", "VLAN1", "in vlan 10").
-    {
-        const char *vp = find_ci(msg, "vlan");
-        if (vp) {
-            vp += 4;
-            while (*vp == ' ' || *vp == '\t' || *vp == '=') vp++;
-            int v = atoi(vp);
-            if (v > 0 && v <= 4094) entry->vlan_id = v;
-        }
-    }
-
-    // v2: interface name + flap peer ("between port A and port B").
-    {
-        if (find_iface_at(msg, low, 0, entry->ifname, sizeof(entry->ifname))) {
-            const char *ap = find_ci(low, " and port ");
-            if (!ap) ap = find_ci(low, " and ");
-            if (ap) {
-                int off = (int)(ap - low);
-                find_iface_at(msg, low, off, entry->peer_ifname, sizeof(entry->peer_ifname));
-            }
-        }
-        // v2: STP new root ("new root Gi0/5").
-        const char *rp = find_ci(low, "new root ");
-        if (rp) {
-            copy_token(msg + (rp - low) + 9, entry->stp_root, sizeof(entry->stp_root));
-        }
-    }
-
-    // v2: AP radio (wlan0/wlan1).
-    {
-        const char *wp = find_ci(low, "wlan");
-        if (wp && isdigit((unsigned char)wp[4])) {
-            const char *s = msg + (wp - low);
-            int i = 0;
-            while (s[i] && isalnum((unsigned char)s[i]) && i < (int)sizeof(entry->radio) - 1) {
-                entry->radio[i] = s[i];
-                i++;
-            }
-            entry->radio[i] = '\0';
-        }
-    }
-
-    // v2: AP SSID ("(SSID Campus)" / "SSID=foo").
-    {
-        const char *sp = find_ci(msg, "ssid");
-        if (sp) {
-            sp += 4;
-            while (*sp == ' ' || *sp == '\t' || *sp == '=') sp++;
-            int i = 0;
-            while (sp[i] && sp[i] != ')' && sp[i] != '\n' && sp[i] != '\r'
-                    && i < (int)sizeof(entry->ssid) - 1) {
-                entry->ssid[i] = sp[i];
-                i++;
-            }
-            while (i > 0 && (entry->ssid[i-1] == ' ' || entry->ssid[i-1] == '\t')) i--;
-            entry->ssid[i] = '\0';
-        }
-    }
-
-    // v2: AP reason code (reason=3 / reason=4).
-    {
-        int v = extract_kv_int(msg, "reason");
-        if (v >= 0) entry->reason = v;
-    }
-
-    // v2: AP signal + tx rate (signal=67 dBm, tx_rate=29Mbps).
-    {
-        int v = extract_kv_int(msg, "signal");
-        if (v != -1) entry->signal_dbm = v;
-        v = extract_kv_int(msg, "tx_rate");
-        if (v > 0) entry->tx_rate_mbps = v;
-    }
-
-    // v2: AP EAP/auth outcome.
-    if (strcmp(entry->device_type, "ap") == 0) {
-        if (contains_ci(low, "auth_failed") || contains_word(low, "failed") ||
-                contains_ci(low, "invalid credentials") ||
-                contains_ci(low, "authentication error") ||
-                contains_ci(low, "ap-sta-failed")) {
-            snprintf(entry->eap_status, sizeof(entry->eap_status), "failed");
-        } else if (contains_ci(low, "authentication success") ||
-                contains_ci(low, "handshake completed") ||
-                contains_ci(low, "auth success")) {
-            snprintf(entry->eap_status, sizeof(entry->eap_status), "success");
-        }
-    }
-
-    // v2: router OSPF neighbor ("Nbr 172.20.0.9").
-    {
-        const char *np = find_ci(low, "nbr ");
-        if (np) {
-            copy_token(msg + (np - low) + 4, entry->ospf_nbr, sizeof(entry->ospf_nbr));
-        }
-    }
-
-    // v2: router gateway= and dst-address=.
-    {
-        char gbuf[46];
-        if (extract_kv(msg, "gateway", gbuf, sizeof(gbuf)))
-            snprintf(entry->gateway, sizeof(entry->gateway), "%.45s", gbuf);
-        if (extract_kv(msg, "dst-address", gbuf, sizeof(gbuf)))
-            snprintf(entry->route_dst, sizeof(entry->route_dst), "%.45s", gbuf);
-    }
-
-    // v2: connection tracking count ("tracking: 5 entries" / "conntrack: 5 ...").
-    {
-        const char *cp = find_ci(low, "tracking:");
-        if (!cp) cp = find_ci(low, "conntrack:");
-        if (cp) {
-            cp = strchr(cp, ':');
-            if (cp) {
-                int v = atoi(cp + 1);
-                if (v >= 0) entry->conntrack_count = v;
-            }
-        }
-    }
+    entry->dst_port = extract_port_generic(msg, PORT_DST);
+    entry->src_port = extract_port_generic(msg, PORT_SRC);
+    extract_action(entry->action, low, sizeof(entry->action));
+    extract_tcp_flags(entry->tcp_flags, low, sizeof(entry->tcp_flags));
+    extract_mac(entry, msg, low);
+    extract_vlan(&entry->vlan_id, msg);
+    extract_iface(entry, msg, low);
+    extract_radio(entry->radio, msg, low, sizeof(entry->radio));
+    extract_ssid(entry->ssid, msg, sizeof(entry->ssid));
+    extract_reason(&entry->reason, msg);
+    extract_signal(&entry->signal_dbm, &entry->tx_rate_mbps, msg);
+    extract_eap(entry->eap_status, sizeof(entry->eap_status), entry->device_type, low);
+    extract_ospf(entry->ospf_nbr, msg, low, sizeof(entry->ospf_nbr));
+    extract_gateway(entry->gateway, sizeof(entry->gateway), entry->route_dst, sizeof(entry->route_dst), msg);
+    extract_conntrack(&entry->conntrack_count, low);
 
     // Fallback: positional IPs.
     if (!entry->src_ip[0] && !entry->dst_ip[0]) {
         char ip0[46] = "", ip1[46] = "";
         int n = collect_ips(msg, ip0, ip1);
         if (n == 1) {
-            if (contains_ci(low, "dhcpack") || contains_ci(low, "dhcp") ||
-                contains_ci(low, "assigned") || contains_ci(low, "lease") ||
-                contains_ci(low, "connected") ||
-                contains_ci(low, "associated") || contains_ci(low, "authenticated") ||
-                contains_ci(low, "learned")) {
+            if ((strstr(low, "dhcpack") != NULL) || (strstr(low, "dhcp") != NULL) ||
+                (strstr(low, "assigned") != NULL) || (strstr(low, "lease") != NULL) ||
+                (strstr(low, "connected") != NULL) ||
+                (strstr(low, "associated") != NULL) || (strstr(low, "authenticated") != NULL) ||
+                (strstr(low, "learned") != NULL)) {
                 snprintf(entry->dst_ip, sizeof(entry->dst_ip), "%s", ip0);
             } else {
                 snprintf(entry->src_ip, sizeof(entry->src_ip), "%s", ip0);
@@ -547,21 +571,6 @@ void extract_fields(log_entry_t* entry) {
             snprintf(entry->src_ip, sizeof(entry->src_ip), "%s", ip0);
             snprintf(entry->dst_ip, sizeof(entry->dst_ip), "%s", ip1);
         }
-        if (!entry->dst_ip[0] && contains_ci(low, "dhcpack")) {
-            const char *d = strstr(low, "dhcpack on ");
-            if (d) {
-                char ip0b[46] = "", ip1b[46] = "";
-                if (collect_ips(d, ip0b, ip1b) >= 1)
-                    snprintf(entry->dst_ip, sizeof(entry->dst_ip), "%s", ip0b);
-            } else {
-                const char *d2 = strstr(low, "dhcpack to ");
-                if (d2) {
-                    char ip0b[46] = "", ip1b[46] = "";
-                    if (collect_ips(d2, ip0b, ip1b) >= 1)
-                        snprintf(entry->dst_ip, sizeof(entry->dst_ip), "%s", ip0b);
-                }
-            }
-        }
     } else if (entry->src_ip[0] && !entry->dst_ip[0]) {
         char ip0[46] = "", ip1[46] = "";
         if (collect_ips(msg, ip0, ip1) >= 2)
@@ -569,62 +578,59 @@ void extract_fields(log_entry_t* entry) {
     }
 
     // Event classification (single-line keywords only; multi-event attacks
-    // like scans / brute force / DDoS are detected downstream by
-    // pipeline/rules_engine.py rate counting, not here).
     const char *ev = NULL;
-    if (contains_ci(low, "ap-sta-failed") || contains_ci(low, "invalid_auth") ||
-             contains_ci(low, "authentication error") || contains_ci(low, "handshake failed") ||
-             (contains_ci(low, "failed") && contains_ci(low, "auth")))
+    if ((strstr(low, "ap-sta-failed") != NULL) || (strstr(low, "invalid_auth") != NULL) ||
+             (strstr(low, "authentication error") != NULL) || (strstr(low, "handshake failed") != NULL) ||
+             ((strstr(low, "failed") != NULL) && (strstr(low, "auth") != NULL)))
         ev = "auth_failure";
-    else if (contains_ci(low, "ap-sta-deauth") || contains_ci(low, "deauth"))
+    else if ((strstr(low, "ap-sta-deauth") != NULL) || (strstr(low, "deauth") != NULL))
         ev = "deauth";
-    else if (contains_ci(low, "ap-sta-disconnected") || contains_ci(low, "disassociated") ||
-             contains_ci(low, "disconnected"))
+    else if ((strstr(low, "ap-sta-disconnected") != NULL) || (strstr(low, "disassociated") != NULL) ||
+             (strstr(low, "disconnected") != NULL))
         ev = "client_disconnect";
-    else if (contains_ci(low, "ap-sta-connected") || contains_ci(low, "associated") ||
-             contains_ci(low, "authenticated") || contains_ci(low, "handshake completed") ||
-             contains_ci(low, "authentication success") || contains_ci(low, "auth success"))
+    else if ((strstr(low, "ap-sta-connected") != NULL) || (strstr(low, "associated") != NULL) ||
+             (strstr(low, "authenticated") != NULL) || (strstr(low, "handshake completed") != NULL) ||
+             (strstr(low, "authentication success") != NULL) || (strstr(low, "auth success") != NULL))
         ev = "client_connect";
-    else if (contains_ci(low, "dhcpack") ||
-             (contains_ci(low, "dhcp") && (contains_ci(low, "assigned") ||
-              contains_ci(low, "lease") || contains_ci(low, "ack"))))
+    else if ((strstr(low, "dhcpack") != NULL) ||
+             ((strstr(low, "dhcp") != NULL) && ((strstr(low, "assigned") != NULL) ||
+              (strstr(low, "lease") != NULL) || (strstr(low, "ack") != NULL))))
         ev = "dhcp_ack";
-    else if (contains_ci(low, "mac flap") || contains_ci(low, "macflap") ||
-             contains_ci(low, "flapping") || contains_word(low, "flap"))
+    else if ((strstr(low, "mac flap") != NULL) || (strstr(low, "macflap") != NULL) ||
+             (strstr(low, "flapping") != NULL) || contains_word(low, "flap"))
         ev = "mac_flap";
-    else if (contains_ci(low, "mac learn") || contains_ci(low, "learned"))
+    else if ((strstr(low, "mac learn") != NULL) || (strstr(low, "learned") != NULL))
         ev = "mac_learn";
-    // CEF action-based classification (FortiGate traffic logs).
-    // Placed before generic keyword matches to avoid false positives
-    // from CEF header fields like "cat=traffic:forward".
-    else if (contains_ci(low, "act=close") || contains_ci(low, "act=accept"))
+
+    // CEF action-based classification (FortiGate traffic logs). Placed before generic keyword matches to avoid false positives from CEF header fields like "cat=traffic:forward".
+    else if ((strstr(low, "act=close") != NULL) || (strstr(low, "act=accept") != NULL))
         ev = "fw_allow";
-    else if (contains_ci(low, "act=deny") || contains_ci(low, "act=drop") ||
-             contains_ci(low, "act=reject"))
+    else if ((strstr(low, "act=deny") != NULL) || (strstr(low, "act=drop") != NULL) ||
+             (strstr(low, "act=reject") != NULL))
         ev = "fw_block";
-    else if (contains_ci(low, "block") || contains_ci(low, "drop") ||
-             contains_ci(low, "deny"))
+    else if ((strstr(low, "block") != NULL) || (strstr(low, "drop") != NULL) ||
+             (strstr(low, "deny") != NULL))
         ev = "fw_block";
-    else if (contains_ci(low, "reject"))
+    else if ((strstr(low, "reject") != NULL))
         ev = "fw_reject";
-    else if (contains_ci(low, "allow") || contains_ci(low, "accept"))
+    else if ((strstr(low, "allow") != NULL) || (strstr(low, "accept") != NULL))
         ev = "fw_allow";
-    else if (contains_ci(low, "signal="))
+    else if ((strstr(low, "signal=") != NULL))
         ev = "signal_report";
-    else if (contains_ci(low, "stp") || contains_ci(low, "spantree") ||
-             contains_ci(low, "root bridge"))
+    else if ((strstr(low, "stp") != NULL) || (strstr(low, "spantree") != NULL) ||
+             (strstr(low, "root bridge") != NULL))
         ev = "stp_event";
-    else if (contains_ci(low, "lineproto") || contains_word(low, "link") ||
-             contains_ci(low, "updown") || contains_word(low, "port"))
+    else if ((strstr(low, "lineproto") != NULL) || contains_word(low, "link") ||
+             (strstr(low, "updown") != NULL) || contains_word(low, "port"))
         ev = (strcmp(entry->device_type, "switch") == 0) ? "port_status" : "interface_status";
-    else if (contains_ci(low, "routing table") || contains_ci(low, "ospf") ||
-             contains_ci(low, "adjchg") || contains_word(low, "route"))
+    else if ((strstr(low, "routing table") != NULL) || (strstr(low, "ospf") != NULL) ||
+             (strstr(low, "adjchg") != NULL) || contains_word(low, "route"))
         ev = (strcmp(entry->device_type, "router") == 0) ? "route_update" : "route_change";
-    else if (contains_ci(low, "conntrack") || contains_ci(low, "connection tracking"))
+    else if ((strstr(low, "conntrack") != NULL) || (strstr(low, "connection tracking") != NULL))
         ev = "nat_conntrack";
-    else if (contains_ci(low, "masquerad") || (contains_ci(low, "nat") && !contains_ci(low, "donat")))
+    else if ((strstr(low, "masquerad") != NULL) || ((strstr(low, "nat") != NULL) && !(strstr(low, "donat") != NULL)))
         ev = "nat_event";
-    else if (contains_ci(low, "router input") || contains_ci(low, "router forward"))
+    else if ((strstr(low, "router input") != NULL) || (strstr(low, "router forward") != NULL))
         ev = "packet_log";
 
     if (ev) {
