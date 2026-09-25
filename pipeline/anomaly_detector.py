@@ -1,5 +1,4 @@
 # Anomaly detector coordinator — rules engine (primary) + ML engine
-# (Isolation Forest second opinion, firewall-device traffic only).
 
 from db.init import get_connection, query_window, insert_anomaly, bump_anomaly
 from pipeline.rules_engine import detect_rules, THRESHOLD_VERSION
@@ -11,9 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# ML engine disabled — Isolation Forest scores live-rate windows out-of-
-# from pipeline.ml_engine import extract_features, load_model, detect_ml
-
+# ML scoring — supervised RF bundle, firewall-device traffic only
+from pipeline.ml_engine import extract_features, load_model, detect_ml
 
 WINDOW_INTERVAL = 15  # seconds between detection cycles
 WINDOW_SIZE = 30  # seconds of logs to query
@@ -28,8 +26,6 @@ running = True
 _last_insert = {}
 
 # Remove stale entries to prevent unbounded memory growth.
-
-
 def _prune_last_insert():
     now = time.monotonic()
     stale = [k for k, v in _last_insert.items() if (now - v[2]) > MAX_COOLDOWN]
@@ -78,7 +74,12 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
         if SEV_RANK.get(hit["severity"], 0) > SEV_RANK[max_severity]:
             max_severity = hit["severity"]
 
-    # ML engine disabled — rules engine is primary detection layer
+    # Layer 2: ML second opinion (firewall windows only) — raises severity
+    if ml_score and ml_severity != "LOW":
+        descriptions.append(
+            f"[ML] firewall window score {ml_score:.3f} → {ml_severity}")
+        if SEV_RANK.get(ml_severity, 0) > SEV_RANK[max_severity]:
+            max_severity = ml_severity
 
     if not descriptions:
         return None
@@ -92,24 +93,22 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
             "window_seconds": window_seconds,
             "event_rate": (len(rows) / max(1, window_seconds)) if rows is not None else None,
             "threshold_version": THRESHOLD_VERSION,
-            # ML engine disabled
-            # "ml_score": ml_score,
-            # "ml_severity": ml_severity,
+            "ml_score": ml_score,
+            "ml_severity": ml_severity,
             "affected_ips": list(affected_ips),
         }),
     }
-
-    # Main detection loop — run as daemon thread from orchestrator.
-
 
 def start_detector(interval=WINDOW_INTERVAL):
     global running
 
     print("[DETECTOR] Starting anomaly detector", file=sys.stderr)
 
-    # ML layer disabled — rules engine is primary detection layer
-    model = None
-    print("[DETECTOR] ML layer disabled — using rules engine only", file=sys.stderr)
+    # ML layer: supervised RF bundle (window_seconds checked against WINDOW_SIZE)
+    model = load_model(expected_window_seconds=WINDOW_SIZE)
+    if model is None:
+        print("[DETECTOR] ML layer unavailable — using rules engine only",
+              file=sys.stderr)
 
     try:
         conn = get_connection()
@@ -137,9 +136,15 @@ def start_detector(interval=WINDOW_INTERVAL):
             rows_with_ip = [r for r in rows if r.get('src_ip')]
             rule_hits = detect_rules(rows_with_ip, WINDOW_SIZE)
 
-            # ML engine disabled — rules engine is primary detection layer
+            # Layer 2: ML scoring — firewall rows of this window only.
+            # extract_features returns None when the window has no
+            # firewall traffic → skip ML, rules verdict stands.
             ml_score = 0.0
             ml_severity = "LOW"
+            if model is not None:
+                feats = extract_features(rows, WINDOW_SIZE, model)
+                if feats is not None:
+                    ml_score, ml_severity = detect_ml(feats, model)
 
             # 3. Combine all results
             anomaly = combine_results(
