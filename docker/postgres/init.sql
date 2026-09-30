@@ -1,4 +1,4 @@
--- Network Log Monitoring System — Database Schema
+-- SISKAMLAN (Sistem Keamanan LAN) — Database Schema
 
 -- ============================================================
 -- logs: parsed syslog entries from all network devices

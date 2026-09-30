@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Network LAN Monitor — Parent Launcher
+# SISKAMLAN — Parent Launcher
 
 import subprocess
 import sys
@@ -35,7 +35,7 @@ def main():
     signal.signal(signal.SIGTERM, cleanup)
 
     print("=" * 50, file=sys.stderr)
-    print("  Network LAN Monitor", file=sys.stderr)
+    print("  SISKAMLAN", file=sys.stderr)
     print("=" * 50, file=sys.stderr)
 
     # Start orchestrator in background (logs to file so TUI stays clean)

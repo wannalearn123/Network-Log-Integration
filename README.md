@@ -1,4 +1,4 @@
-# Network LAN Monitoring System
+# SISKAMLAN (Sistem Keamanan LAN)
 
 Real-time network monitoring system with automated anomaly detection. Simulates a building LAN using Docker containers, collects syslog data with a C collector, stores it in PostgreSQL, detects anomalies using rules + Isolation Forest ML, and displays everything in a terminal dashboard.
 
@@ -124,7 +124,7 @@ Environment variables (set in `.env`):
 ## Project Structure
 
 ```
-Monitoring System/
+SISKAMLAN/
 ├── run.py                  # Parent launcher (starts orchestrator + TUI)
 ├── .env                    # Database credentials (not committed)
 ├── collector/              # C log collector

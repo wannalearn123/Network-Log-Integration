@@ -1,4 +1,4 @@
-# AGENTS.md — Network LAN Monitoring System
+# AGENTS.md — SISKAMLAN (Sistem Keamanan LAN)
 
 ## Quick Start
 
