@@ -49,7 +49,7 @@ class LogDetailScreen(ModalScreen):
             for label, key in (
                 ("Src IP", "src_ip"), ("Dst IP", "dst_ip"),
                 ("Proto", "proto"), ("Port", "port"),
-                ("Action", "action"), ("Flags", "tcp_flags"),
+                ("Action", "action"),
                 ("MAC", "mac"), ("VLAN", "vlan_id"),
                 ("Iface", "ifname"), ("Peer", "peer_ifname"),
                 ("STP root", "stp_root"), ("SSID", "ssid"),
@@ -160,8 +160,8 @@ class SecurityOverviewScreen(ModalScreen):
             yield Static("─" * 44)
             yield Static("")
             yield Static(f"  CRITICAL     [bold red]{sev_crit}[/]")
-            yield Static(f"  HIGH         [bold yellow]{sev_high}[/]")
-            yield Static(f"  MEDIUM       {sev_med}")
+            yield Static(f"  HIGH         [bold orange]{sev_high}[/]")
+            yield Static(f"  MEDIUM       [bold yellow]{sev_med}[/]")
             yield Static(f"  LOW          {sev_low}")
             yield Static("")
             yield Static("[bold]TOP SOURCES[/]")

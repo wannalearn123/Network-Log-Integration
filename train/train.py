@@ -12,18 +12,23 @@ from sklearn.preprocessing import StandardScaler
 data = pd.read_csv('data/UNSW-NB15_1.csv', header=None, low_memory=False)
 data.columns = data.columns.astype(str)
 
-cols_to_drop = ['0', '1', '2', '11', '12', '13', '17', '19', '20', '21', '28', '29', '47']
-data = data.drop(columns=cols_to_drop)
+TARGET = '48'
+
+USE_FEATURES = [
+    '3', '4', '6', '40', '41', '42', '43', '44', '45', '46', '48',
+]
+
+data = data[USE_FEATURES]
 
 data['3'] = pd.to_numeric(data['3'], errors='coerce')
 data = data.dropna(subset=['3'])
 data['3'] = data['3'].astype(int)
 
-y = data['48'].astype(int)
-X = data.drop(columns=['48'])
+y = data[TARGET].astype(int)
+X = data.drop(columns=[TARGET])
 
-# group rare protos and states (<0.1% freq) into 'other'
-for col in ('4', '5'):
+# group rare protos (<0.1% freq) into 'other'
+for col in [c for c in ('4',) if c in X.columns]:
     freq = data[col].value_counts(normalize=True)
     rare = freq[freq < 0.001].index
     X[col] = X[col].replace(rare, 'other')
@@ -61,7 +66,7 @@ while True:
 print(f"redundant cols dropped: {sorted(redundant, key=int)}")
 X = X.drop(columns=list(redundant))
 
-X = pd.get_dummies(X, columns=['4', '5'], dtype=np.int8)
+X = pd.get_dummies(X, columns=[c for c in ('4',) if c in X.columns], dtype=np.int8)
 
 print(X.head(5))
 
@@ -111,18 +116,22 @@ print("confusion matrix:\n", confusion_matrix(y_test, y_pred))
 importances = pd.Series(clf.feature_importances_, index=X.columns)
 print("top 10 features:\n", importances.sort_values(ascending=False).head(10).round(4).to_string())
 
-abl_cols = ['9', '36', '15']
-clf_abl = make_clf()
-clf_abl.fit(X_train.drop(columns=abl_cols), y_train)
-y_pred_abl = clf_abl.predict(X_test.drop(columns=abl_cols))
+# ablation guard: only runs when those cols survived selection
+abl_cols = [c for c in ('9', '36', '15') if c in X.columns]
+if abl_cols:
+    clf_abl = make_clf()
+    clf_abl.fit(X_train.drop(columns=abl_cols), y_train)
+    y_pred_abl = clf_abl.predict(X_test.drop(columns=abl_cols))
 
-print(f"\n--- ablation: dropped {abl_cols} (sttl, ct_state_ttl, Dload) ---")
-print(classification_report(y_test, y_pred_abl, target_names=['normal', 'attack']))
-print("confusion matrix:\n", confusion_matrix(y_test, y_pred_abl))
-importances_abl = pd.Series(clf_abl.feature_importances_,
-                            index=X.columns.drop(abl_cols))
-print("top 5 features after ablation:\n",
-      importances_abl.sort_values(ascending=False).head(5).round(4).to_string())
+    print(f"\n--- ablation: dropped {abl_cols} ---")
+    print(classification_report(y_test, y_pred_abl, target_names=['normal', 'attack']))
+    print("confusion matrix:\n", confusion_matrix(y_test, y_pred_abl))
+    importances_abl = pd.Series(clf_abl.feature_importances_,
+                                index=X.columns.drop(abl_cols))
+    print("top 5 features after ablation:\n",
+          importances_abl.sort_values(ascending=False).head(5).round(4).to_string())
+else:
+    print("\n--- ablation skipped: abl_cols not in feature set ---")
 
 
 bundle = {

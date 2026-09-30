@@ -4,7 +4,7 @@ SQL_LOGS = """
 SELECT timestamp, hostname, device_type, event,
        host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, proto, dst_port,
        COALESCE(client_mac, mac, host(dst_ip)) AS entity,
-       src_port, action, tcp_flags, mac, vlan_id, ifname, peer_ifname,
+       src_port, action, mac, vlan_id, ifname, peer_ifname,
        stp_root, client_mac, ssid, radio, reason, signal_dbm,
        tx_rate_mbps, eap_status, ospf_nbr, gateway, route_dst,
        dhcp_mac, conntrack_count
@@ -17,7 +17,7 @@ SQL_LOGS_SEARCH = """
 SELECT timestamp, hostname, device_type, event,
        host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, proto, dst_port,
        COALESCE(client_mac, mac, host(dst_ip)) AS entity,
-       src_port, action, tcp_flags, mac, vlan_id, ifname, peer_ifname,
+       src_port, action, mac, vlan_id, ifname, peer_ifname,
        stp_root, client_mac, ssid, radio, reason, signal_dbm,
        tx_rate_mbps, eap_status, ospf_nbr, gateway, route_dst,
        dhcp_mac, conntrack_count

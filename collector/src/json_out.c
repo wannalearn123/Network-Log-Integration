@@ -55,7 +55,7 @@ char* to_json(const log_entry_t* entry) {
         + json_escaped_len(entry->device_type) + json_escaped_len(entry->event)
         + json_escaped_len(entry->src_ip) + json_escaped_len(entry->dst_ip)
         + json_escaped_len(entry->proto) + json_escaped_len(entry->action) 
-		+ json_escaped_len(entry->tcp_flags) + json_escaped_len(entry->mac) 
+		+ json_escaped_len(entry->mac) 
 		+ json_escaped_len(entry->ifname) + json_escaped_len(entry->peer_ifname) 
 		+ json_escaped_len(entry->stp_root) + json_escaped_len(entry->client_mac) 
 		+ json_escaped_len(entry->ssid) + json_escaped_len(entry->radio) 
@@ -125,10 +125,6 @@ char* to_json(const log_entry_t* entry) {
     if (entry->action[0]) {
         APPEND_FMT("%s", ",");
         APPEND_STR("action", entry->action);
-    }
-    if (entry->tcp_flags[0]) {
-        APPEND_FMT("%s", ",");
-        APPEND_STR("tcp_flags", entry->tcp_flags);
     }
     if (entry->mac[0]) {
         APPEND_FMT("%s", ",");

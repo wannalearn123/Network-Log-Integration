@@ -11,13 +11,6 @@ static void to_lower_copy(const char *src, char *dst, size_t n) {
     dst[i] = '\0';
 }
 
-static void to_upper_copy(const char *src, char *dst, size_t n) {
-    size_t i;
-    for (i = 0; src[i] && i + 1 < n; i++)
-        dst[i] = toupper((unsigned char)src[i]);
-    dst[i] = '\0';
-}
-
 // Device type detection from hostname.
 static int host_has_token(const char *host_lower, const char *tok) {
     size_t tlen = strlen(tok);
@@ -150,27 +143,6 @@ static int extract_port_generic(const char *msg, int want_src) {
         if (port > 0 && port <= 65535) return port;
     }
 
-    // Disabled: no current generator emits "port N" numeric; "port " is followed
-    // by iface names (Gi0/3) and atoi would misfire. Re-enable if needed.
-    // const char *pp = strstr(low, "port ");
-    // if (pp) {
-    //     pp += 5;
-    //     while (*pp == ' ') pp++;
-    //     int p2 = atoi(pp);
-    //     if (p2 > 0 && p2 <= 65535) return p2;
-    // }
-
-    // Disabled: no current generator emits "-> host:port" with a port;
-    // NAT logs use "-> masqueraded via" (no colon-port). Re-enable if needed.
-    // // ":PORT" after "->" (e.g. "a -> b:53")
-    // const char *arrow = strstr(msg, "->");
-    // if (arrow) {
-    //     const char *colon = strrchr(arrow, ':');
-    //     if (colon) {
-    //         int p2 = atoi(colon + 1);
-    //         if (p2 > 0 && p2 <= 65535) return p2;
-    //     }
-    // }
     return -1;
 }
 
@@ -200,19 +172,6 @@ static void extract_action(char* out, const char *low, int out_size ) {
         snprintf(out, out_size, "reject");
     } else if (contains_word(low, "allow") || contains_word(low, "accept")) {
         snprintf(out, out_size, "allow");
-    }
-}
-
-// v2: TCP flags (SYN|ACK|FIN|RST|URG), first match wins.
-static void extract_tcp_flags(char *out, const char *low, int out_size) {
-    const char *flags[] = {"syn", "ack", "fin", "rst", "urg"};
-    for (int w = 0; w < 5; w++) {
-        if (contains_word(low, flags[w])) {
-			char tmp[5];
-			to_upper_copy(flags[w], tmp, sizeof(tmp));
-            snprintf(out, out_size, "%s", tmp); 
-            break;
-        }
     }
 }
 
@@ -539,7 +498,6 @@ void extract_fields(log_entry_t* entry) {
     entry->dst_port = extract_port_generic(msg, PORT_DST);
     entry->src_port = extract_port_generic(msg, PORT_SRC);
     extract_action(entry->action, low, sizeof(entry->action));
-    extract_tcp_flags(entry->tcp_flags, low, sizeof(entry->tcp_flags));
     extract_mac(entry, msg, low);
     extract_vlan(&entry->vlan_id, msg);
     extract_iface(entry, msg, low);

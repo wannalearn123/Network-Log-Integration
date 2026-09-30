@@ -22,8 +22,6 @@ running = True
 _stdin_lock = threading.Lock()
 
 # Tail a file from the end, feed new lines to collector stdin.
-
-
 def tail_file(filepath, stdin_pipe):
     with open(filepath, "r") as f:
         f.seek(0, 2)  # seek to end

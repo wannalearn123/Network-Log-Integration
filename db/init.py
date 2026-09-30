@@ -27,7 +27,7 @@ LOG_COLUMNS = (
     "timestamp", "hostname", "facility", "severity",
     "device_type", "event", "src_ip", "dst_ip", "proto", "dst_port",
     # v2 fields (collector {"v":2}); absent keys insert as NULL via .get()
-    "src_port", "action", "tcp_flags",
+    "src_port", "action",
     "mac", "vlan_id", "ifname", "peer_ifname", "stp_root",
     "client_mac", "ssid", "radio", "reason", "signal_dbm",
     "tx_rate_mbps", "eap_status",

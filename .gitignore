@@ -22,6 +22,10 @@ test_parser
 # Trained model — 800KB+ binary, reproducible via train/train_model.py
 pipeline/models/*.pkl
 
+# Offline training artifact — 97MB bundle from train/train.py, copied into
+# pipeline/models/ (above) for the live detector
+train/*.pkl
+
 # Training data — large downloadable archives, never commit
 *.zip
 *.csv

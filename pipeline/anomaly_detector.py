@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ML scoring — supervised RF bundle, firewall-device traffic only
-from pipeline.ml_engine import extract_features, load_model, detect_ml
+from pipeline.ml_engine import load_model, score_firewall_window
 
 WINDOW_INTERVAL = 15  # seconds between detection cycles
 WINDOW_SIZE = 30  # seconds of logs to query
@@ -35,11 +35,6 @@ def _prune_last_insert():
         print(f"[DETECTOR] Pruned {len(stale)} stale cooldown entries "
               f"({len(_last_insert)} remaining)", file=sys.stderr)
 
-    # Build a hashable key so repeats of the same attack merge.
-    # Includes a count bucket + minute bucket so distinct floods don't merge
-    # for the full cooldown, and per-IP scans still dedup correctly.
-
-
 def merge_signature(rule_hits, ml_severity):
     parts = tuple(sorted(
         (h.get("type", "?"), str(h.get("entity") or h.get("src_ip") or "-"),
@@ -57,10 +52,8 @@ def _cooldown_for(rule_hits):
         return INSERT_COOLDOWN
     return INSERT_COOLDOWN_FLOOD if rule_hits else INSERT_COOLDOWN
 
-    # Merge results from rules + ML into one anomaly record, or None.
-
-
-def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=WINDOW_SIZE):
+def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=WINDOW_SIZE,
+                    ml_detail=None):
     max_severity = "LOW"
     descriptions = []
     affected_ips = set()
@@ -74,10 +67,11 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
         if SEV_RANK.get(hit["severity"], 0) > SEV_RANK[max_severity]:
             max_severity = hit["severity"]
 
-    # Layer 2: ML second opinion (firewall windows only) — raises severity
+    # Layer 2: ML second opinion (per-traffic max over firewall rows) — raises severity
     if ml_score and ml_severity != "LOW":
+        n = (ml_detail or {}).get("scored", "?")
         descriptions.append(
-            f"[ML] firewall window score {ml_score:.3f} → {ml_severity}")
+            f"[ML] firewall max score {ml_score:.3f} → {ml_severity} (n={n})")
         if SEV_RANK.get(ml_severity, 0) > SEV_RANK[max_severity]:
             max_severity = ml_severity
 
@@ -95,6 +89,8 @@ def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=
             "threshold_version": THRESHOLD_VERSION,
             "ml_score": ml_score,
             "ml_severity": ml_severity,
+            "ml_scored": (ml_detail or {}).get("scored"),
+            "ml_high": (ml_detail or {}).get("high"),
             "affected_ips": list(affected_ips),
         }),
     }
@@ -104,11 +100,12 @@ def start_detector(interval=WINDOW_INTERVAL):
 
     print("[DETECTOR] Starting anomaly detector", file=sys.stderr)
 
-    # ML layer: supervised RF bundle (window_seconds checked against WINDOW_SIZE)
-    model = load_model(expected_window_seconds=WINDOW_SIZE)
-    if model is None:
-        print("[DETECTOR] ML layer unavailable — using rules engine only",
-              file=sys.stderr)
+    # # ML layer: supervised RF bundle (window_seconds checked against WINDOW_SIZE)
+    # model = load_model(expected_window_seconds=WINDOW_SIZE)
+    # if model is None:
+    #     print("[DETECTOR] ML layer unavailable — using rules engine only",
+    #           file=sys.stderr)
+    model = None
 
     try:
         conn = get_connection()
@@ -131,24 +128,19 @@ def start_detector(interval=WINDOW_INTERVAL):
                 time.sleep(interval)
                 continue
 
-            # 1. Layer 1: Rule-based detection (instant)
-            # Filter rows with src_ip — rules engine needs src_ip to detect patterns
             rows_with_ip = [r for r in rows if r.get('src_ip')]
             rule_hits = detect_rules(rows_with_ip, WINDOW_SIZE)
 
-            # Layer 2: ML scoring — firewall rows of this window only.
-            # extract_features returns None when the window has no
-            # firewall traffic → skip ML, rules verdict stands.
             ml_score = 0.0
             ml_severity = "LOW"
-            if model is not None:
-                feats = extract_features(rows, WINDOW_SIZE, model)
-                if feats is not None:
-                    ml_score, ml_severity = detect_ml(feats, model)
+            ml_detail = {"scored": 0, "high": 0}
+            # if model is not None:
+            #     ml_score, ml_severity, ml_detail = score_firewall_window(
+            #         rows, WINDOW_SIZE, model)
 
             # 3. Combine all results
             anomaly = combine_results(
-                rule_hits, ml_score, ml_severity, rows, WINDOW_SIZE)
+                rule_hits, ml_score, ml_severity, rows, WINDOW_SIZE, ml_detail)
 
             # 4. Insert if something was flagged (merge repeats into one row)
             if anomaly:

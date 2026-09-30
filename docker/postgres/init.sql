@@ -18,7 +18,6 @@ CREATE TABLE IF NOT EXISTS logs (
     -- v2 fields (collector {"v":2}); all nullable, omitted when unset
     src_port      INTEGER,
     action        VARCHAR(16),
-    tcp_flags     VARCHAR(8),
     mac           VARCHAR(24),
     vlan_id       INTEGER,
     ifname        VARCHAR(40),

@@ -19,7 +19,6 @@ typedef struct {
     int  dst_port;
 	int  src_port;          /* SPT= / spt= */
     char action[16];        /* allow|drop|deny|reject|close|accept */
-    char tcp_flags[16];     /* SYN|ACK|FIN|RST|URG */
     char mac[24];           /* switch: flapping/learned MAC */
     int  vlan_id;           /* switch: vlan N */
     char ifname[40];        /* interface (Gi1/0/3, GigabitEthernet0/0, eth0, wlan0) */

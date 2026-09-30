@@ -527,18 +527,6 @@ void test_v2_fortigate_cef(void) {
     PASS();
 }
 
-// v2: DDoS SYN line carries tcp_flags.
-void test_v2_tcp_flags(void) {
-    TEST("v2 TCP SYN flag");
-    const char* line = "2026-09-21T02:30:32+00:00 firewall.docker_building-lan kernel: [FW DROP] IN=eth0 SRC=172.20.0.50 DST=172.20.0.4 PROTO=TCP SPT=12345 DPT=80 SYN";
-    log_entry_t* entry = parse_syslog_line(line);
-    if (!entry) { FAIL("returned NULL"); return; }
-    if (strcmp(entry->tcp_flags, "SYN") != 0)
-        { FAIL("tcp_flags should be SYN"); free_entry(entry); return; }
-    free_entry(entry);
-    PASS();
-}
-
 // v2: switch MAC flap carries mac + vlan + both ports.
 void test_v2_switch_flap(void) {
     TEST("v2 switch MAC flap fields");
@@ -733,7 +721,6 @@ int main(void) {
     test_ap01_is_ap();
     test_v2_firewall_kernel();
     test_v2_fortigate_cef();
-    test_v2_tcp_flags();
     test_v2_switch_flap();
     test_v2_switch_stp();
     test_v2_ap_deauth();
