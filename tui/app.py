@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Real-time terminal dashboard for the network monitoring system.
+# Real-time terminal dashboard for SISKAMLAN (Sistem Keamanan LAN).
 import sys
 from pathlib import Path
 
@@ -20,50 +20,57 @@ from tui.queries import (
 from tui.widgets.log_stream import LogStream
 from tui.widgets.anomaly_panel import AnomalyPanel
 from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen, SecurityOverviewScreen
+from tui.widgets.about_screen import AboutScreen
 from tui.widgets.stats_bar import StatsBar
 from tui.widgets.search_bar import SearchBar
+from tui.theme import MONITORING_BLUE, BACKGROUND
 
 
-# Network LAN Monitor TUI Dashboard.
+# SISKAMLAN TUI Dashboard.
 
 
 class NetworkMonitor(App):
 
-    CSS = """
-    Screen {
-        layout: vertical;
-    }
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.register_theme(MONITORING_BLUE)
+        self.theme = "monitoring-blue"
 
-    #status-bar {
+    CSS = f"""
+    Screen {{
+        layout: vertical;
+    }}
+
+    #status-bar {{
         height: 1;
         padding: 0 1;
         background: $accent;
-        color: $text;
+        color: {BACKGROUND};
         text-style: bold;
-    }
+    }}
 
-    #search-bar {
+    #search-bar {{
         height: auto;
         width: 100%;
         padding: 0 1;
         margin: 1 0;
-    }
+    }}
 
-    #data-area {
+    #data-area {{
         height: 1fr;
-    }
+    }}
 
-    #data-area > #log-stream {
+    #data-area > #log-stream {{
         width: 3fr;
         height: 100%;
         border: solid $accent;
-    }
+    }}
 
-    #data-area > #anomaly-panel {
+    #data-area > #anomaly-panel {{
         width: 2fr;
         height: 100%;
-        border: solid $warning;
-    }
+        border: solid $primary;
+    }}
     """
 
     BINDINGS = [
@@ -74,6 +81,7 @@ class NetworkMonitor(App):
         Binding("slash", "focus_search", "Search", show=True),
         Binding("space", "security_overview",
                 "Overview", show=True, priority=True),
+        Binding("i", "about", "About", show=True),
     ]
 
     paused: reactive[bool] = reactive(False)
@@ -206,8 +214,14 @@ class NetworkMonitor(App):
     def action_security_overview(self):
         self._open_detail(SecurityOverviewScreen())
 
+    def action_about(self):
+        # Don't hijack typing in the search bar.
+        if self._search_bar.has_focus:
+            return
+        self._open_detail(AboutScreen())
+
 
 if __name__ == "__main__":
     app = NetworkMonitor()
-    app.title = "Network LAN Monitor"
+    app.title = "SISKAMLAN"
     app.run()

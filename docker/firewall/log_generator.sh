@@ -11,7 +11,10 @@
 #
 # Normal traffic still dominates background events.
 
-ATTACKER_IP="172.20.0.50"
+# Pool of attacker IPs — one is picked at random per attack burst.
+# .50/.51 are log labels only (no real containers), free of collisions
+# with the Docker LAN (.2 .3 .4 .10 .11 .20).
+ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
 
 # Normal firewall events (background loop)
 # Produces regular fw_allow/fw_block/fw_reject entries with src_ip and dst_port so rules engine can detect patterns
@@ -86,6 +89,9 @@ ATTACKER_IP="172.20.0.50"
 
         # One attack every 6 x 30s = ~3 min, rotating type
         if [ $((COUNTER % 6)) -eq 0 ]; then
+            # One attacker per burst: the whole burst keeps a single src_ip
+            # so per-IP rule thresholds (>=12 ports / >=12 fails) still fire.
+            ATTACKER_IP=${ATTACKER_IPS[$((RANDOM % ${#ATTACKER_IPS[@]}))]}
             ATTACK_SLOT=$(( (COUNTER / 6) % 3 ))
 
             # --- Port scan: 20 unique ports, needs >=12 for PORT_SCAN ---

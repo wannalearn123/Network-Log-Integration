@@ -15,7 +15,7 @@ class SearchBar(Input):
         border: tall $border-blurred;
     }
     SearchBar:focus {
-        border: tall orange;
+        border: tall $accent;
     }
     """
 

@@ -2,17 +2,20 @@
 
 from textual.widgets import Static
 
+APP_NAME = "SISKAMLAN"
+
 
     # Top bar with log counts, device count, and anomaly breakdown.
 class StatsBar(Static):
 
     def __init__(self, **kwargs):
-        super().__init__("Loading...", **kwargs)
+        super().__init__(f"{APP_NAME} │ Loading...", **kwargs)
 
         # Update the stats bar with new counts.
     def update_stats(self, stats: dict, paused: bool = False):
         status = "⏸  PAUSED" if paused else "▶ LIVE"
         parts = [
+            APP_NAME,
             status,
             f"Logs: {stats.get('total_logs', 0):,}",
             f"1h: {stats.get('logs_1h', 0):,}",

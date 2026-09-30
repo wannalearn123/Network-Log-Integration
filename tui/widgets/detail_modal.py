@@ -6,6 +6,8 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from tui.theme import ACCENT, MUTED
+
 BORDER_TITLE = "Detail"
 
 
@@ -21,6 +23,7 @@ class LogDetailScreen(ModalScreen):
         height: auto;
         max-height: 30;
         border: solid $accent;
+        background: $surface;
         padding: 1 2;
     }
     #log-card Static {
@@ -77,6 +80,7 @@ class AnomalyDetailScreen(ModalScreen):
         height: auto;
         max-height: 20;
         border: solid $warning;
+        background: $surface;
         padding: 1 2;
     }
     #anomaly-card Static {
@@ -111,6 +115,7 @@ class SecurityOverviewScreen(ModalScreen):
         height: auto;
         max-height: 30;
         border: solid $warning;
+        background: $surface;
         padding: 1 2;
     }
     #overview-card Static {
@@ -179,4 +184,7 @@ class SecurityOverviewScreen(ModalScreen):
 
     def _bar(self, pct):
         filled = int(pct * 15)
-        return "█" * filled + "░" * (15 - filled)
+        return (
+            f"[{ACCENT}]{'█' * filled}[/]"
+            f"[{MUTED}]{'░' * (15 - filled)}[/]"
+        )
