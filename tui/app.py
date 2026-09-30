@@ -20,6 +20,8 @@ from tui.queries import (
 from tui.widgets.log_stream import LogStream
 from tui.widgets.anomaly_panel import AnomalyPanel
 from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen, SecurityOverviewScreen
+from tui.csv_export import export_view, plan_export
+from tui.widgets.export_modal import ExportConfirmScreen
 from tui.widgets.about_screen import AboutScreen
 from tui.widgets.stats_bar import StatsBar
 from tui.widgets.search_bar import SearchBar
@@ -76,12 +78,13 @@ class NetworkMonitor(App):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("p", "toggle_pause", "Pause/Resume", show=True),
-        Binding("escape", "dismiss", "Close"),
-        Binding("tab", "focus_next", "Next", show=True, priority=True),
+        Binding("escape", "dismiss", "Close", show=False),
+        Binding("tab", "focus_next", "Next", show=False, priority=True),
         Binding("slash", "focus_search", "Search", show=True),
         Binding("space", "security_overview",
                 "Overview", show=True, priority=True),
         Binding("i", "about", "About", show=True),
+        Binding("e", "export_csv", "Export", show=True),
     ]
 
     paused: reactive[bool] = reactive(False)
@@ -219,6 +222,38 @@ class NetworkMonitor(App):
         if self._search_bar.has_focus:
             return
         self._open_detail(AboutScreen())
+
+    def action_export_csv(self):
+        # Don't hijack typing in the search bar.
+        if self._search_bar.has_focus:
+            return
+        # One stamp for both the modal preview and the actual write, so the
+        # filenames shown are exactly the filenames created.
+        log_path, anom_path = plan_export()
+        self._export_stamp = log_path.stem.removeprefix("logs-")
+        self.push_screen(
+            ExportConfirmScreen(
+                log_path, anom_path,
+                len(self._log_table._rows), len(self._anom_table._rows),
+            ),
+            callback=self._do_export,
+        )
+
+        # Write the CSVs only after the user confirms; nothing touches disk
+        # when the modal is cancelled.
+    def _do_export(self, confirmed):
+        if not confirmed:
+            self.title = "SISKAMLAN — export cancelled"
+            return
+        result = export_view(
+            self._log_table._rows, self._anom_table._rows,
+            stamp=self._export_stamp,
+        )
+        if result:
+            log_path, _anom_path, n = result
+            self.title = f"SISKAMLAN — exported {n} rows to {log_path.parent}/"
+        else:
+            self.title = "SISKAMLAN — CSV export failed"
 
 
 if __name__ == "__main__":

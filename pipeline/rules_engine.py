@@ -1,7 +1,6 @@
 # Rule-based anomaly detection engine — deterministic pattern matching, no ML.
-# Thresholds are rates (per second) so any window size scores the same.
-# 30s equivalents: 12 ports / 12 fails / 210 events / 100 drops /
-#                  3 MAC flaps / 2 STP changes / 6 route updates.
+# Thresholds are rates (per second) so any window size scores the same;
+# per-threshold 30s equivalents live next to each constant below.
 # Adjusted for realistic traffic: 99%+ normal, <1% attacks.
 
 from collections import defaultdict
@@ -9,14 +8,16 @@ import re
 
 
 THRESHOLD_VERSION = "v4-attr"
-PORT_SCAN_RATE = 0.4     # >=12 unique ports in 30s (was 0.2 / 6 ports)
-BRUTE_RATE = 0.4         # >=12 fails in 30s (was 0.2 / 6 fails)
+PORT_SCAN_RATE = 0.4     # >=12 unique ports in 30s
+BRUTE_RATE = 0.4         # >=12 fails in 30s
 DEAUTH_RATE = 0.3        # >=9 deauths in 30s, deauth-only (no auth failures mixed in)
-FLOOD_RATE = 8.0         # >=240 events in 30s (was 7.0 / 210 events — reduced false positives)
-DROP_RATE = 3.3333       # >=100 drops in 30s (was 0.367 / 11 drops)
+FLOOD_RATE = 8.0         # >=240 events in 30s
+DROP_RATE = 3.3333       # >=100 drops in 30s
 MAC_FLAP_RATE = 0.1      # >=3 flaps of the same MAC in 30s
 STP_RATE = 0.0667        # >=2 STP root changes in 30s
 ROUTE_CHURN_RATE = 0.2   # >=6 route updates in 30s
+
+SENSITIVE_PORTS = {22, 443, 3389, 21, 23}  # SSH, HTTPS, RDP, FTP, Telnet (NOT 80 — DDoS target)
 
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
@@ -67,17 +68,9 @@ def detect_rules(rows, window_seconds=30):
     # AP auth failures attribute to client_mac (v2); firewall to src_ip.
     ip_fails = defaultdict(int)
     ip_deauth = defaultdict(int)
-    SENSITIVE_PORTS = {22, 443, 3389, 21, 23}  # SSH, HTTPS, RDP, FTP, Telnet (NOT 80 — DDoS target)
     for row in rows:
         ev = (row.get("event") or "").upper()
-        src = row.get("src_ip")
-        if (row.get("device_type") or "") == "ap":
-            ent = row.get("client_mac")
-            ent = str(ent) if ent else None
-        elif not src or str(src).lower() in ("unknown", "none", ""):
-            ent = None
-        else:
-            ent = str(src)
+        ent = _identity(row)
         if not ent:
             continue
         # Explicit brute force / auth failure events

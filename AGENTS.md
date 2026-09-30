@@ -86,6 +86,23 @@ All Python entry points add the project root to `sys.path` and load `.env` via `
 | `Tab` | Cycle between panels |
 | `Space` | Open security overview modal |
 
+## Telegram Alerts (optional)
+
+`pipeline/notifier.py` sends a Telegram message on every **fresh** HIGH/CRITICAL anomaly insert (repeats merged by the detector cooldown do not re-alert). Setup:
+
+1. Create a bot with **@BotFather** → copy the token.
+2. Get your chat id via **@userinfobot** (or `getUpdates`).
+3. Add to `.env`:
+   ```
+   NOTIFY_TELEGRAM=1
+   TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   TELEGRAM_CHAT_ID=123456789
+   NOTIFY_MIN_SEVERITY=HIGH   # LOW | MEDIUM | HIGH | CRITICAL
+   ```
+4. `TELEGRAM_API_BASE` may be overridden (proxy/testing).
+
+Notifications use stdlib `urllib` only — no extra dependencies. Failures are logged to stderr and never crash the detector.
+
 ## Testing
 
 - **C tests**: `make -C collector test` (builds and runs 27 unit tests in `collector/tests/test_parser.c`)

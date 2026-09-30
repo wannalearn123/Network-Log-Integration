@@ -18,13 +18,13 @@ MAX_BATCH = 10000  # safety cap: drop oldest on backpressure, never grow unbound
 running = True
 
 
-    # Signal the ingest loop to exit.
+# Signal the ingest loop to exit.
 def stop():
     global running
     running = False
 
 
-    # Read JSON lines from collector stdout, insert into PostgreSQL.
+# Read JSON lines from collector stdout, insert into PostgreSQL.
 def run_ingest(collector_stdout):
     global running
 
@@ -43,8 +43,8 @@ def run_ingest(collector_stdout):
 
         print("[INGEST] Connected to PostgreSQL", file=sys.stderr)
 
-            # Flush batch; on failure retry row-by-row and skip poison rows.
-            # Connection errors are re-raised so the watchdog stops the pipeline.
+        # Flush batch; on failure retry row-by-row and skip poison rows.
+        # Connection errors are re-raised so the watchdog stops the pipeline.
         def flush_batch():
             nonlocal total, dropped, last_flush
             if not batch:

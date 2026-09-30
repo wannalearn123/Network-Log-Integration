@@ -91,9 +91,6 @@ def detect_ml(features, model):
 # --- firewall window → training feature vectors -----------------------------
 # Per-traffic scoring (matches UNSW per-flow training): one vector per
 # firewall row, classified individually, window verdict = max score.
-# Legacy extract_features() below aggregated the whole window into a single
-# mode-based vector, which dilutes a lone attack flow among normal rows
-# (especially in sparse simulated traffic) → false negatives.
 def _proto_of(row):
     # collector normalizes proto (6→tcp, 17→udp); anything outside the
     # training keep-list (e.g. icmp) → 'other' to match the rare grouping
@@ -196,82 +193,3 @@ def score_firewall_window(rows, window_seconds, bundle):
     best = max(scores)
     detail = {"scored": len(scores), "high": sum(1 for s in scores if s >= hi)}
     return best, _severity(best, thresholds), detail
-
-
-# Legacy window-mode vector (single mode-aggregated row). Kept for
-# backward compat; the detector now uses score_firewall_window().
-# Returns np.ndarray shape (1, d) in bundle['features'] order, or None
-# when the window holds no firewall rows (skip scoring — never fabricate
-# a vector from empty data).
-def extract_features(rows, window_seconds, bundle):
-    fw = [r for r in rows if (r.get("device_type") or "") == "firewall"]
-    if not fw:
-        return None
-
-    feats = bundle["features"]
-    impute = bundle.get("impute") or {}
-
-    def _mode(vals):
-        vals = [v for v in vals if v is not None and v != ""]
-        if not vals:
-            return None
-        return max(set(vals), key=vals.count)
-
-    # --- direct fields (window mode) ---
-    dst_port = _mode([r.get("dst_port") for r in fw])
-
-    # collector normalizes proto (6→tcp, 17→udp); anything outside the
-    # training keep-list (e.g. icmp) → 'other' to match the rare grouping
-    proto = str(_mode([r.get("proto") for r in fw]) or "other").lower()
-    if proto not in ("arp", "ospf", "tcp", "udp", "unas"):
-        proto = "other"
-
-    # --- window counters: dur + ct_* family ---
-    # dur = flow duration of the MODAL flow group (src+dst+port), not the
-    # whole window span: UNSW dur is per-flow and sub-second (attack q50=0).
-    # A single-shot log (scan, one-packet flow) → dur=0 → attack signature.
-    ref_src = _mode([r.get("src_ip") for r in fw])
-    ref_dst = _mode([r.get("dst_ip") for r in fw])
-    ref_svc = _mode([r.get("dst_port") for r in fw])   # "service" = dst port
-    ref_sprt = _mode([r.get("src_port") for r in fw])
-
-    grp_ts = [r["timestamp"] for r in fw
-              if r.get("timestamp") is not None
-              and r.get("src_ip") == ref_src
-              and r.get("dst_ip") == ref_dst
-              and r.get("dst_port") == ref_svc]
-    dur = (max(grp_ts) - min(grp_ts)).total_seconds() if len(grp_ts) > 1 else 0.0
-
-    def _n(pred):
-        return float(sum(1 for r in fw if pred(r)))
-
-    ct = {
-        "40": _n(lambda r: r.get("src_ip") == ref_src
-                 and r.get("dst_port") == ref_svc),
-        "41": _n(lambda r: r.get("dst_ip") == ref_dst
-                 and r.get("dst_port") == ref_svc),
-        "42": _n(lambda r: r.get("dst_ip") == ref_dst),
-        "43": _n(lambda r: r.get("src_ip") == ref_src),
-        "44": _n(lambda r: r.get("src_ip") == ref_src
-                 and r.get("dst_port") == ref_svc),
-        "45": _n(lambda r: r.get("dst_ip") == ref_dst
-                 and r.get("src_port") == ref_sprt),
-        "46": _n(lambda r: r.get("src_ip") == ref_src
-                 and r.get("dst_ip") == ref_dst),
-    }
-
-    # --- assemble in exact training order ---
-    vec = []
-    for col in feats:
-        if col == "3":                                  # dsport
-            v = dst_port if dst_port is not None else impute.get("3", 0.0)
-            vec.append(float(v))
-        elif col.startswith("4_"):                      # proto dummies
-            vec.append(1.0 if col == "4_" + proto else 0.0)
-        elif col == "6":                                # dur (seconds)
-            vec.append(float(dur))
-        elif col in ct:                                 # 40-46 window counters
-            vec.append(ct[col])
-        else:
-            raise ValueError(f"feature {col!r} not derivable from syslog row — retrain first")
-    return np.array([vec], dtype=float)

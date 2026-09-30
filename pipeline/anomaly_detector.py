@@ -2,6 +2,7 @@
 
 from db.init import get_connection, query_window, insert_anomaly, bump_anomaly
 from pipeline.rules_engine import detect_rules, THRESHOLD_VERSION
+from pipeline.notifier import notify
 import sys
 import time
 import json
@@ -175,6 +176,13 @@ def start_detector(interval=WINDOW_INTERVAL):
                         f"[DETECTOR] Anomaly [{anomaly['severity']}]: "
                         f"{anomaly['description']}",
                         file=sys.stderr,
+                    )
+                    # Alert on fresh inserts only — repeats are merged above
+                    # and must not spam the notification channel.
+                    notify(
+                        anomaly["severity"],
+                        anomaly["description"],
+                        anomaly_id,
                     )
             else:
                 print("[DETECTOR] Window clean — no anomalies", file=sys.stderr)
