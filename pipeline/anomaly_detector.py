@@ -36,65 +36,51 @@ def _prune_last_insert():
         print(f"[DETECTOR] Pruned {len(stale)} stale cooldown entries "
               f"({len(_last_insert)} remaining)", file=sys.stderr)
 
-def merge_signature(rule_hits, ml_severity):
-    parts = tuple(sorted(
-        (h.get("type", "?"), str(h.get("entity") or h.get("src_ip") or "-"),
-         len(str(h.get("description", ""))) // 20)
-        for h in rule_hits
-    ))
+def merge_signature(hit):
+    h_type = hit.get("type", "?")
+    entity = str(hit.get("entity") or hit.get("src_ip") or "-")
     bucket_min = int(time.time() // 60)
-    return (parts, ml_severity, bucket_min)
+    return (h_type, entity, bucket_min)
 
 
-def _cooldown_for(rule_hits):
-    for h in rule_hits:
-        if h.get("type") in ("FLOOD", "HIGH_DROP_RATE") and not h.get("src_ip"):
-            continue
-        return INSERT_COOLDOWN
-    return INSERT_COOLDOWN_FLOOD if rule_hits else INSERT_COOLDOWN
+def _cooldown_for(hit):
+    if hit.get("type") in ("FLOOD", "HIGH_DROP_RATE") and not hit.get("src_ip"):
+        return INSERT_COOLDOWN_FLOOD  # 60s, aggregate
+    return INSERT_COOLDOWN  # 300s, attributed
 
-def combine_results(rule_hits, ml_score, ml_severity, rows=None, window_seconds=WINDOW_SIZE,
+def combine_results(ranked_hits, ml_score, ml_severity, rows=None, window_seconds=WINDOW_SIZE,
                     ml_detail=None):
-    max_severity = "LOW"
-    descriptions = []
-    affected_ips = set()
-
-    # Layer 1: Rule hits
-    for hit in rule_hits:
-        descriptions.append(f"[RULE] {hit['description']}")
+    # One anomaly dict per hit (caller sorts by severity first). The ML
+    # second opinion attaches to the top hit only.
+    out = []
+    for i, hit in enumerate(ranked_hits):
+        descriptions = [f"[RULE] {hit['description']}"]
+        severity = hit.get("severity", "LOW")
+        attach_ml = (i == 0 and ml_score and ml_severity != "LOW")
+        if attach_ml:
+            n = (ml_detail or {}).get("scored", "?")
+            descriptions.append(
+                f"[ML] firewall max score {ml_score:.3f} → {ml_severity} (n={n})")
+            if SEV_RANK.get(ml_severity, 0) > SEV_RANK.get(severity, 0):
+                severity = ml_severity
         ent = hit.get("entity") or hit.get("src_ip")
-        if ent:
-            affected_ips.add(str(ent))
-        if SEV_RANK.get(hit["severity"], 0) > SEV_RANK[max_severity]:
-            max_severity = hit["severity"]
-
-    # Layer 2: ML second opinion (per-traffic max over firewall rows) — raises severity
-    if ml_score and ml_severity != "LOW":
-        n = (ml_detail or {}).get("scored", "?")
-        descriptions.append(
-            f"[ML] firewall max score {ml_score:.3f} → {ml_severity} (n={n})")
-        if SEV_RANK.get(ml_severity, 0) > SEV_RANK[max_severity]:
-            max_severity = ml_severity
-
-    if not descriptions:
-        return None
-
-    return {
-        "severity": max_severity,
-        "description": " | ".join(descriptions),
-        "anomaly_score": ml_score,
-        "features": json.dumps({
-            "rule_hits": len(rule_hits),
-            "window_seconds": window_seconds,
-            "event_rate": (len(rows) / max(1, window_seconds)) if rows is not None else None,
-            "threshold_version": THRESHOLD_VERSION,
-            "ml_score": ml_score,
-            "ml_severity": ml_severity,
-            "ml_scored": (ml_detail or {}).get("scored"),
-            "ml_high": (ml_detail or {}).get("high"),
-            "affected_ips": list(affected_ips),
-        }),
-    }
+        out.append({
+            "severity": severity,
+            "description": " | ".join(descriptions),
+            "anomaly_score": ml_score if attach_ml else 0.0,
+            "features": json.dumps({
+                "type": hit.get("type"),
+                "entity": str(ent) if ent else None,
+                "window_seconds": window_seconds,
+                "event_rate": (len(rows) / max(1, window_seconds)) if rows is not None else None,
+                "threshold_version": THRESHOLD_VERSION,
+                "ml_score": ml_score if attach_ml else 0.0,
+                "ml_severity": ml_severity if attach_ml else "LOW",
+                "ml_scored": (ml_detail or {}).get("scored"),
+                "ml_high": (ml_detail or {}).get("high"),
+            }),
+        })
+    return out
 
 def start_detector(interval=WINDOW_INTERVAL):
     global running
@@ -129,7 +115,12 @@ def start_detector(interval=WINDOW_INTERVAL):
                 time.sleep(interval)
                 continue
 
-            rows_with_ip = [r for r in rows if r.get('src_ip')]
+            rows_with_ip = [r for r in rows
+                              if r.get('src_ip') or r.get('mac') or r.get('client_mac')
+                              # stp_event rows carry no IP/MAC by nature (a root
+                              # change names interfaces, not hosts); Rule 6 counts
+                              # rows, not identities, so let them through.
+                              or r.get('event') == 'stp_event']
             rule_hits = detect_rules(rows_with_ip, WINDOW_SIZE)
 
             ml_score = 0.0
@@ -139,51 +130,57 @@ def start_detector(interval=WINDOW_INTERVAL):
             #     ml_score, ml_severity, ml_detail = score_firewall_window(
             #         rows, WINDOW_SIZE, model)
 
-            # 3. Combine all results
-            anomaly = combine_results(
-                rule_hits, ml_score, ml_severity, rows, WINDOW_SIZE, ml_detail)
+            # 3. Combine all results — one anomaly per hit, top severity first
+            ranked_hits = sorted(
+                rule_hits,
+                key=lambda h: SEV_RANK.get(h.get("severity", "LOW"), 0),
+                reverse=True,
+            )
+            anomalies = combine_results(
+                ranked_hits, ml_score, ml_severity, rows, WINDOW_SIZE, ml_detail)
 
-            # 4. Insert if something was flagged (merge repeats into one row)
-            if anomaly:
-                key = merge_signature(rule_hits, ml_severity)
-                now = time.monotonic()
-                cooldown = _cooldown_for(rule_hits)
-                prev = _last_insert.get(key)
-                if prev is not None and (now - prev[2]) < cooldown:
-                    anomaly_id, count, _ = prev
-                    bump_anomaly(cursor, anomaly_id, count + 1)
-                    try:
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
-                    _last_insert[key] = (anomaly_id, count + 1, now)
-                    print(
-                        f"[DETECTOR] Repeat [{anomaly['severity']}] "
-                        f"(x{count + 1}) — merged into anomaly {anomaly_id}",
-                        file=sys.stderr,
-                    )
-                else:
-                    anomaly_id = insert_anomaly(
-                        cursor, anomaly, window_seconds=WINDOW_SIZE)
-                    try:
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
-                    _last_insert[key] = (anomaly_id, 1, now)
-                    print(
-                        f"[DETECTOR] Anomaly [{anomaly['severity']}]: "
-                        f"{anomaly['description']}",
-                        file=sys.stderr,
-                    )
-                    # Alert on fresh inserts only — repeats are merged above
-                    # and must not spam the notification channel.
-                    notify(
-                        anomaly["severity"],
-                        anomaly["description"],
-                        anomaly_id,
-                    )
+            # 4. Insert each hit (merge repeats into its own row)
+            if anomalies:
+                for hit, anomaly in zip(ranked_hits, anomalies):
+                    key = merge_signature(hit)
+                    now = time.monotonic()
+                    cooldown = _cooldown_for(hit)
+                    prev = _last_insert.get(key)
+                    if prev is not None and (now - prev[2]) < cooldown:
+                        anomaly_id, count, _ = prev
+                        bump_anomaly(cursor, anomaly_id, count + 1)
+                        try:
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
+                        _last_insert[key] = (anomaly_id, count + 1, now)
+                        print(
+                            f"[DETECTOR] Repeat [{anomaly['severity']}] "
+                            f"(x{count + 1}) — merged into anomaly {anomaly_id}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        anomaly_id = insert_anomaly(
+                            cursor, anomaly, window_seconds=WINDOW_SIZE)
+                        try:
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
+                        _last_insert[key] = (anomaly_id, 1, now)
+                        print(
+                            f"[DETECTOR] Anomaly [{anomaly['severity']}]: "
+                            f"{anomaly['description']}",
+                            file=sys.stderr,
+                        )
+                        # Alert on fresh inserts only — repeats are merged above
+                        # and must not spam the notification channel.
+                        notify(
+                            anomaly["severity"],
+                            anomaly["description"],
+                            anomaly_id,
+                        )
             else:
                 print("[DETECTOR] Window clean — no anomalies", file=sys.stderr)
 

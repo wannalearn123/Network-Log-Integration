@@ -2,6 +2,8 @@
 
 # Simulates hostapd/wpa_supplicant-style authentication logs
 # Since real hostapd needs wireless hardware, we simulate the log output
+# Background noise stays below rule thresholds; the attack loop at the
+# bottom emits insider WiFi bursts (deauth storm + auth brute-force).
 
 DEVICE_NAMES=("laptop-01" "phone-02" "tablet-03" "printer-04" "iot-cam-05" \
               "laptop-06" "phone-07" "smart-tv-08" "workstation-09" "tablet-10")
@@ -91,6 +93,37 @@ done
         esac
 
         sleep $((5 + RANDOM % 10))
+    done
+) &
+
+# Insider WiFi attack bursts (lateral / over-the-air).
+# A deauth flood needs no LAN access at all — frames are unauthenticated —
+# and password guessing hits the AP directly, so the firewall never sees
+# either. One rotating burst every ~3 min (6 x 30s):
+#   deauth storm: 12x from one MAC (needs >=9 for DEAUTH_STORM, MEDIUM)
+#   auth brute:   15x failures, one MAC (needs >=12 for BRUTE_FORCE, CRITICAL)
+# Fixed identity per burst so the rules engine groups them; no labels.
+(
+    COUNTER=0
+    while true; do
+        COUNTER=$((COUNTER + 1))
+        if [ $((COUNTER % 6)) -eq 0 ]; then
+            SLOT=$(( (COUNTER / 6) % 2 ))
+            # Fixed target MAC — background noise uses random MACs.
+            TARGET_MAC="aa:bb:cc:99:88:77"
+            if [ "$SLOT" -eq 0 ]; then
+                # --- Deauth storm: DoS / evil-twin setup signature ---
+                for _ in $(seq 1 12); do
+                    logger -t hostapd "wlan0: AP-STA-DEAUTH $TARGET_MAC reason=4"
+                done
+            else
+                # --- Auth brute-force: PSK/EAP guessing signature ---
+                for _ in $(seq 1 15); do
+                    logger -t hostapd "wlan0: AP-STA-FAILED $TARGET_MAC status=1 invalid_auth"
+                done
+            fi
+        fi
+        sleep 30
     done
 ) &
 

@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Switch log generator — Cisco IOS + Ruijie templates.
+# Background noise (MAC learning, occasional flap/STP) stays below rule
+# thresholds. The attack loop at the bottom emits insider (east-west)
+# bursts — MAC flap storm + STP instability — that the rules engine flags.
+# No explicit labels; detection is pattern-based.
+
 # Create a bridge interface to simulate a managed switch
 brctl addbr br0 2>/dev/null || true
 ip link set br0 up
@@ -68,6 +74,40 @@ echo "[switch] Bridge br0 created and up"
         fi
 
         sleep 10
+    done
+) &
+
+# Insider attack bursts (lateral / east-west movement inside the LAN).
+# A compromised host or rogue switch never touches the firewall, so the
+# only trace is here: L2 anomalies. One rotating burst every ~3 min
+# (6 x 30s), alternating flap storm <-> STP instability.
+# Volumes sit above rule thresholds but far below FLOOD (240/30s):
+#   flap storm: 5 flaps of one MAC (needs >=3 for MAC_FLAP)
+#   STP burst:  3 root changes (needs >=2 for STP_FLAP)
+# Fixed identity per burst so the rules engine groups them; no labels.
+(
+    COUNTER=0
+    while true; do
+        COUNTER=$((COUNTER + 1))
+        if [ $((COUNTER % 6)) -eq 0 ]; then
+            SLOT=$(( (COUNTER / 6) % 2 ))
+            # Fixed victim MAC per burst — background noise uses random
+            # MACs, so only this identity crosses the threshold.
+            VICTIM_MAC="02:aa:aa:bb:cc:dd"
+            VLAN=10
+            if [ "$SLOT" -eq 0 ]; then
+                # --- MAC flap storm: MITM / spoof / loop signature ---
+                for _ in $(seq 1 5); do
+                    logger -t ios "%SW_MATM-4-MACFLAP_NOTIF: Host $VICTIM_MAC in vlan $VLAN is flapping between port Gi1/0/1 and port Gi1/0/2"
+                done
+            else
+                # --- STP instability: rogue-root / topology flap signature ---
+                for PORT in 7 2 7; do
+                    logger -t ios "%SPANTREE-5-ROOTCHANGE: Root changed on VLAN1 — new root Gi1/0/$PORT"
+                done
+            fi
+        fi
+        sleep 30
     done
 ) &
 
