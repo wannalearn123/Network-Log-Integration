@@ -3,7 +3,8 @@
 # Env config (.env):
 #   NOTIFY_TELEGRAM=1            master switch
 #   TELEGRAM_BOT_TOKEN=...       bot token from @BotFather
-#   TELEGRAM_CHAT_ID=...         target chat id (@userinfobot / getUpdates)
+#   TELEGRAM_CHAT_ID=...         comma-separated chat ids (@userinfobot / getUpdates);
+#                                group ids start with '-', each user must /start the bot
 #   NOTIFY_MIN_SEVERITY=HIGH     LOW | MEDIUM | HIGH | CRITICAL
 #   TELEGRAM_API_BASE=...        optional override (proxy/testing)
 #
@@ -35,31 +36,36 @@ def _min_severity():
 
 def _send_telegram(text):
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not token or not chat_id:
+    raw_ids = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not raw_ids:
         _log("Telegram not configured (missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) — skipping")
         return False
 
+    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
     api_base = os.environ.get("TELEGRAM_API_BASE", DEFAULT_API_BASE).rstrip("/")
     url = f"{api_base}/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
-    req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
-            body = resp.read().decode("utf-8", "replace")
-            if resp.status != 200:
-                _log(f"Telegram API returned HTTP {resp.status}: {body[:200]}")
-                return False
-            data = json.loads(body)
-            if not data.get("ok"):
-                _log(f"Telegram API error: {body[:200]}")
-                return False
-            return True
-    except Exception as e:
-        _log(f"Telegram send failed: {e}")
-        return False
+
+    ok_all = True
+    for chat_id in chat_ids:
+        payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=payload, headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
+                body = resp.read().decode("utf-8", "replace")
+                if resp.status != 200:
+                    _log(f"Telegram API returned HTTP {resp.status} for {chat_id}: {body[:200]}")
+                    ok_all = False
+                    continue
+                data = json.loads(body)
+                if not data.get("ok"):
+                    _log(f"Telegram API error for {chat_id}: {body[:200]}")
+                    ok_all = False
+        except Exception as e:
+            _log(f"Telegram send failed for {chat_id}: {e}")
+            ok_all = False
+    return ok_all
 
 
 def notify(severity, description, anomaly_id, timestamp=None):
