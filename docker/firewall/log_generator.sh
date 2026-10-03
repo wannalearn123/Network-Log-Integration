@@ -122,7 +122,7 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
 
             # --- DDoS-lite: 150 packets to :80, needs >=100 for HIGH_DROP_RATE ---
             if [ "$ATTACK_SLOT" -eq 2 ]; then
-                for _ in $(seq 1 150); do
+                for _ in $(seq 1 260); do
                     FLOOD_SPT=$((1024 + RANDOM % 60000))
                     BRAND=$((RANDOM % 2))
                     if [ "$BRAND" -eq 0 ]; then

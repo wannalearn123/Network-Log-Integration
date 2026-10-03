@@ -82,6 +82,44 @@ echo "[router] iptables rules applied"
     done
 ) &
 
+# Routing-plane attack burst (control-plane compromise).
+# A rogue OSPF speaker never appears at L2 or in the data path, and the
+# firewall only sees the resulting traffic as ordinary flows — the only
+# trace is here, on the router itself.
+# One burst every ~3 min (6 x 30s): 8 adjacency resets toward one foreign
+# router-id (needs >=6 for ROUTE_CHURN).
+# Both brands emit "Nbr <router-id>", which the collector maps to src_ip +
+# ospf_nbr, so every row survives the detector's attributable-identity
+# filter and the burst attributes to a single peer.
+# Volume sits above the rule threshold with ~1.4x headroom (same margin as
+# the switch and AP generators) so window alignment jitter can't drop it
+# below. Fixed router-id per burst so the rules engine groups it while
+# background noise (random neighbours) stays well under.
+# No explicit labels; detection is pattern-based.
+(
+    COUNTER=0
+    while true; do
+        COUNTER=$((COUNTER + 1))
+        if [ $((COUNTER % 6)) -eq 0 ]; then
+            # Rogue router-id — background noise uses random neighbours, so
+            # only this identity crosses the threshold.
+            ROGUE_RID="6.6.6.6"
+
+            # --- OSPF rogue adjacency: foreign router-id keeps forming and
+            #     dropping adjacencies (MITM / LS poisoning signature) ---
+            for _ in $(seq 1 8); do
+                BRAND=$((RANDOM % 2))
+                if [ "$BRAND" -eq 0 ]; then
+                    logger -t ios "%OSPF-5-ADJCHG: Process 1, Nbr $ROGUE_RID on GigabitEthernet0/0 from FULL to DOWN, reason: bad neighbor"
+                else
+                    logger -t route "ospf,info neighbor $ROGUE_RID state change from Full to Down on GigabitEthernet0/0"
+                fi
+            done
+        fi
+        sleep 30  # 6 iters x 30s = one burst every ~3 min
+    done
+) &
+
 # Generate some traffic to trigger iptables LOG rules
 (
     while true; do

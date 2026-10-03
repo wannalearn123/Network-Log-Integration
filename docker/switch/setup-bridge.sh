@@ -52,7 +52,6 @@ echo "[switch] Bridge br0 created and up"
         BRAND=$((RANDOM % 2)) # 0=cisco, 1=ruijie
         # Cisco dot-MAC + colon-MAC variants
         DOTMAC=$(printf "%04x.%04x.%04x" $((RANDOM%65536)) $((RANDOM%65536)) $((RANDOM%65536)))
-        FAKE_MAC=$(printf "02:00:00:%02x:%02x:%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256)))
         FAKE_PORT=$((RANDOM % 4 + 1))
         VLAN=$((RANDOM % 20 + 1))
         # Ruijie uses same Cisco IOS mnemonics

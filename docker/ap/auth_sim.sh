@@ -5,11 +5,6 @@
 # Background noise stays below rule thresholds; the attack loop at the
 # bottom emits insider WiFi bursts (deauth storm + auth brute-force).
 
-DEVICE_NAMES=("laptop-01" "phone-02" "tablet-03" "printer-04" "iot-cam-05" \
-              "laptop-06" "phone-07" "smart-tv-08" "workstation-09" "tablet-10")
-CLIENT_IPS=("172.20.100.1" "172.20.100.2" "172.20.100.3" "172.20.100.4" "172.20.100.5" \
-             "172.20.100.6" "172.20.100.7" "172.20.100.8" "172.20.100.9" "172.20.100.10")
-
 generate_mac() {
     printf "aa:bb:cc:%02x:%02x:%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256))
 }
@@ -22,7 +17,7 @@ echo "[ap] Starting auth simulation (hostapd + Ruijie)"
 
 # Simulate initial client associations (alternate brands)
 sleep 5
-for i in 0 1 2 3 4; do
+for i in $(seq 0 4); do
     MAC=$(generate_mac)
     DOTMAC=$(generate_dotmac)
     if [ $((i % 2)) -eq 0 ]; then
@@ -37,7 +32,6 @@ done
 # Ongoing simulation (dual-brand: 0-4 hostapd, 5-9 ruijie equivalents)
 (
     while true; do
-        IDX=$((RANDOM % ${#DEVICE_NAMES[@]}))
         MAC=$(generate_mac)
         DOTMAC=$(generate_dotmac)
         EVENT=$((RANDOM % 10))
@@ -65,8 +59,7 @@ done
                 ;;
             4)
                 # Normal activity: signal strength report (shared)
-                SIGNAL=$((20 + RANDOM % 60))
-                logger -t hostapd "wlan0: Station $MAC signal=$SIGNAL dBm tx_rate=$((1 + RANDOM % 54))Mbps"
+                logger -t hostapd "wlan0: Station $MAC signal=$((20 + RANDOM % 60)) dBm tx_rate=$((1 + RANDOM % 54))Mbps"
                 ;;
             5)
                 # New client association (Ruijie)
