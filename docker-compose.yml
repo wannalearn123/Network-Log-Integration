@@ -7,7 +7,7 @@ networks:
 
 services:
   syslog:
-    build: ./syslog
+    build: docker/syslog
     container_name: syslog
     hostname: syslog
     networks:
@@ -19,7 +19,7 @@ services:
       - "514:514/tcp"
       - "514:514/udp"
     volumes:
-      - ../data/syslog:/var/log/remote
+      - ./data/syslog:/var/log/remote
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "514"]
       interval: 5s
@@ -33,14 +33,16 @@ services:
     hostname: postgres
     networks:
       building-lan:
-        ipv4_address: 172.20.0.20
+        ipv4_address: 172.20.0.20    
+    env_file:
+      ./.env
     environment:
-      POSTGRES_USER: monitor
-      POSTGRES_PASSWORD: monitor
-      POSTGRES_DB: network_logs
+      POSTGRES_USER: ${PGUSER}
+      POSTGRES_PASSWORD: ${PGPASSWORD}
+      POSTGRES_DB: ${PGDATABASE}
     volumes:
-      - ../data/postgres:/var/lib/postgresql/data
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U monitor -d network_logs"]
       interval: 5s
@@ -49,35 +51,31 @@ services:
     restart: unless-stopped
 
   router:
-    build: ./router
+    build: docker/router
     container_name: router
     hostname: router
     networks:
       building-lan:
         ipv4_address: 172.20.0.11
-    cap_add:
-      - NET_ADMIN
     depends_on:
       syslog:
         condition: service_healthy
     restart: unless-stopped
 
   switch:
-    build: ./switch
+    build: docker/switch
     container_name: switch
     hostname: switch
     networks:
       building-lan:
         ipv4_address: 172.20.0.2
-    cap_add:
-      - NET_ADMIN
     depends_on:
       syslog:
         condition: service_healthy
     restart: unless-stopped
 
   ap:
-    build: ./ap
+    build: docker/ap
     container_name: ap
     hostname: ap
     networks:
@@ -89,14 +87,12 @@ services:
     restart: unless-stopped
 
   firewall:
-    build: ./firewall
+    build: docker/firewall
     container_name: firewall
     hostname: firewall
     networks:
       building-lan:
         ipv4_address: 172.20.0.4
-    cap_add:
-      - NET_ADMIN
     depends_on:
       syslog:
         condition: service_healthy
