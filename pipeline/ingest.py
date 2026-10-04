@@ -46,7 +46,7 @@ def run_ingest(collector_stdout):
         # Flush batch; on failure retry row-by-row and skip poison rows.
         # Connection errors are re-raised so the watchdog stops the pipeline.
         def flush_batch():
-            nonlocal total, dropped, last_flush
+            nonlocal total, last_flush
             if not batch:
                 last_flush = time.monotonic()
                 return

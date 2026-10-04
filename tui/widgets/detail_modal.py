@@ -158,7 +158,6 @@ class SecurityOverviewScreen(ModalScreen):
             pass
 
         max_src = sources[0][1] if sources else 1
-        max_det = detections[0][1] if detections else 1
 
         with Vertical(id="overview-card"):
             yield Static("[bold white]SECURITY OVERVIEW[/]")

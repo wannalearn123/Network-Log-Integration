@@ -12,7 +12,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # ML scoring — supervised RF bundle, firewall-device traffic only
-from pipeline.ml_engine import load_model, score_firewall_window
+from pipeline.ml_engine import (load_model, score_firewall_window,
+                                classify_window_jev)  # noqa: F401
 
 WINDOW_INTERVAL = 15  # seconds between detection cycles
 WINDOW_SIZE = 30  # seconds of logs to query
@@ -87,12 +88,10 @@ def start_detector(interval=WINDOW_INTERVAL):
 
     print("[DETECTOR] Starting anomaly detector", file=sys.stderr)
 
-    # # ML layer: supervised RF bundle (window_seconds checked against WINDOW_SIZE)
-    # model = load_model(expected_window_seconds=WINDOW_SIZE)
-    # if model is None:
-    #     print("[DETECTOR] ML layer unavailable — using rules engine only",
-    #           file=sys.stderr)
-    model = None
+    # supervised RF path disabled: a UNSW-NB15 flow is not a syslog row
+    #   model = load_model(expected_window_seconds=WINDOW_SIZE)
+    #   ml_score, ml_severity, ml_detail = score_firewall_window(
+    #       rows, WINDOW_SIZE, model)
 
     try:
         conn = get_connection()
@@ -181,6 +180,51 @@ def start_detector(interval=WINDOW_INTERVAL):
                             anomaly["description"],
                             anomaly_id,
                         )
+
+                # Layer 2: ML second opinion — one noul per window, throttled
+                # to one row per minute. Never suppresses a rule hit.
+                jev = classify_window_jev(rows)
+                if jev:
+                    jkey = ("JEV", int(time.time() // 60))
+                    jnow = time.monotonic()
+                    jprev = _last_insert.get(jkey)
+                    janomaly = {
+                        "severity": jev["severity"],
+                        "description": (
+                            f"[JEV] attack likely — P={jev['probability']:.2f} "
+                            f"conf={jev['confidence']} · "
+                            f"{jev['detail']['events']} events, "
+                            f"{jev['detail']['entities']} entities, "
+                            f"top {jev['detail']['top_entity']} "
+                            f"({jev['detail']['top_entity_events']}) "
+                            f"in {WINDOW_SIZE}s"),
+                        "anomaly_score": jev["probability"],
+                        "features": json.dumps({
+                            "type": "ML_JEV",
+                            "window_seconds": WINDOW_SIZE,
+                            "event_rate": len(rows) / max(1, WINDOW_SIZE),
+                            "threshold_version": THRESHOLD_VERSION,
+                            "ml_probability": jev["probability"],
+                            "ml_confidence": jev["confidence"],
+                            "ml_model": jev["model"],
+                            "ml_detail": jev["detail"],
+                        }),
+                    }
+                    if jprev is not None and (jnow - jprev[2]) < INSERT_COOLDOWN_FLOOD:
+                        jid, jcount, _ = jprev
+                        bump_anomaly(cursor, jid, jcount + 1)
+                        conn.commit()
+                        _last_insert[jkey] = (jid, jcount + 1, jnow)
+                        print(f"[DETECTOR] [JEV] repeat (x{jcount + 1}) — "
+                              f"merged into anomaly {jid}", file=sys.stderr)
+                    else:
+                        jid = insert_anomaly(
+                            cursor, janomaly, window_seconds=WINDOW_SIZE)
+                        conn.commit()
+                        _last_insert[jkey] = (jid, 1, jnow)
+                        print(f"[DETECTOR] Anomaly [{jev['severity']}]: "
+                              f"{janomaly['description']}", file=sys.stderr)
+                        notify(jev["severity"], janomaly["description"], jid)
             else:
                 print("[DETECTOR] Window clean — no anomalies", file=sys.stderr)
 

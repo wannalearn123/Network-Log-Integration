@@ -8,13 +8,12 @@ import signal
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-VENV_PYTHON = PROJECT_ROOT / "venv" / "bin" / "python"
+VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python"
 
 orchestrator_proc = None
 
 
 def cleanup(sig=None, frame=None):
-    global orchestrator_proc
     print("\n[LAUNCHER] Shutting down...", file=sys.stderr)
     if orchestrator_proc and orchestrator_proc.poll() is None:
         orchestrator_proc.terminate()
