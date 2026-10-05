@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS logs (
     dst_ip        INET,
     proto         VARCHAR(8),
     dst_port      INTEGER,
-    -- v2 fields (collector {"v":2}); all nullable, omitted when unset
+    -- parsed detail fields; all nullable, omitted when unset
     src_port      INTEGER,
     action        VARCHAR(16),
     mac           VARCHAR(24),

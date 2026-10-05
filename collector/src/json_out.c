@@ -61,7 +61,7 @@ char* to_json(const log_entry_t* entry) {
 		+ json_escaped_len(entry->ssid) + json_escaped_len(entry->radio) 
 		+ json_escaped_len(entry->eap_status) + json_escaped_len(entry->ospf_nbr) 
 		+ json_escaped_len(entry->gateway) + json_escaped_len(entry->route_dst) 
-		+ json_escaped_len(entry->dhcp_mac) + 16 * 8 /* optional ints: v, src_port, dst_port, vlan_id, reason, signal_dbm, tx_rate_mbps, conntrack_count */
+		+ json_escaped_len(entry->dhcp_mac) + 16 * 8 /* optional ints: src_port, dst_port, vlan_id, reason, signal_dbm, tx_rate_mbps, conntrack_count */
         + json_escaped_len(raw) + 32;
     if (need > 8 * 1024 * 1024) {
         fprintf(stderr, "collector: JSON over 8MB, dropping line\n");
@@ -91,7 +91,7 @@ char* to_json(const log_entry_t* entry) {
         APPEND_FMT(",\"%s\":%d", key, (val)); \
     } while (0)
 
-    APPEND_FMT("%s", "{\"v\":2,");
+    APPEND_FMT("%s", "{");
     APPEND_STR("timestamp", entry->timestamp);
     APPEND_FMT("%s", ",");
     APPEND_STR("hostname", entry->hostname);

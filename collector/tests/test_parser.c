@@ -497,7 +497,7 @@ void test_ap01_is_ap(void) {
     PASS();
 }
 
-// v2: firewall kernel line carries src_port + action + ifname.
+// firewall kernel line carries src_port + action + ifname.
 void test_v2_firewall_kernel(void) {
     TEST("v2 firewall kernel fields");
     const char* line = "2026-09-21T02:30:21+00:00 firewall.docker_building-lan kernel: [FW REJECT] IN=eth0 OUT= SRC=172.20.100.48 DST=172.20.0.4 PROTO=UDP SPT=19080 DPT=3306";
@@ -513,7 +513,7 @@ void test_v2_firewall_kernel(void) {
     PASS();
 }
 
-// v2: FortiGate CEF line carries src_port + normalized action.
+// FortiGate CEF line carries src_port + normalized action.
 void test_v2_fortigate_cef(void) {
     TEST("v2 FortiGate CEF fields");
     const char* line = "2026-09-21T02:30:23+00:00 firewall.docker_building-lan fortigate: CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F000000001795 FTNTFGTlogid=0000000003 cat=traffic:forward src=172.20.100.1 dst=172.20.0.4 spt=28058 dpt=443 proto=17 act=deny";
@@ -527,7 +527,7 @@ void test_v2_fortigate_cef(void) {
     PASS();
 }
 
-// v2: switch MAC flap carries mac + vlan + both ports.
+// switch MAC flap carries mac + vlan + both ports.
 void test_v2_switch_flap(void) {
     TEST("v2 switch MAC flap fields");
     const char* line = "2026-09-21T02:31:50+00:00 switch.docker_building-lan ios: %SW_MATM-4-MACFLAP_NOTIF: Host 6c58.5f2f.26a6 in vlan 12 is flapping between port Gi1/0/3 and port Gi1/0/4";
@@ -545,7 +545,7 @@ void test_v2_switch_flap(void) {
     PASS();
 }
 
-// v2: switch STP root change carries vlan + root.
+// switch STP root change carries vlan + root.
 void test_v2_switch_stp(void) {
     TEST("v2 switch STP fields");
     const char* line = "2026-09-21T02:30:20+00:00 switch.docker_building-lan rgos: %SPANTREE-5-ROOTCHANGE: Root changed on VLAN1 \u2014 new root Gi0/1";
@@ -559,7 +559,7 @@ void test_v2_switch_stp(void) {
     PASS();
 }
 
-// v2: AP deauth carries client MAC + reason + radio.
+// AP deauth carries client MAC + reason + radio.
 void test_v2_ap_deauth(void) {
     TEST("v2 AP deauth fields");
     const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan hostapd: wlan0: AP-STA-DEAUTH aa:bb:cc:4b:ea:09 reason=4";
@@ -575,7 +575,7 @@ void test_v2_ap_deauth(void) {
     PASS();
 }
 
-// v2: AP signal report carries signal + tx rate.
+// AP signal report carries signal + tx rate.
 void test_v2_ap_signal(void) {
     TEST("v2 AP signal fields");
     const char* line = "2026-09-21T02:31:56+00:00 ap.docker_building-lan hostapd: wlan0: Station aa:bb:cc:ba:4a:28 signal=67 dBm tx_rate=29Mbps";
@@ -589,7 +589,7 @@ void test_v2_ap_signal(void) {
     PASS();
 }
 
-// v2: AP auth failure carries dot-MAC + eap_status.
+// AP auth failure carries dot-MAC + eap_status.
 void test_v2_ap_authfail(void) {
     TEST("v2 AP auth failure fields");
     const char* line = "2026-09-21T02:31:13+00:00 ap.docker_building-lan DOT11: DOT11-4-AUTH_FAILED: Station 5f1c.10f4.3bb1 authentication failed";
@@ -603,7 +603,7 @@ void test_v2_ap_authfail(void) {
     PASS();
 }
 
-// v2: AP assoc carries SSID.
+// AP assoc carries SSID.
 void test_v2_ap_ssid(void) {
     TEST("v2 AP SSID field");
     const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan DOT11: DOT11-6-ASSOC: Station 0ad8.51c6.01e4 associated to WLAN wlan1 (SSID Campus)";
@@ -615,7 +615,7 @@ void test_v2_ap_ssid(void) {
     PASS();
 }
 
-// v2: router OSPF carries neighbor + interface.
+// router OSPF carries neighbor + interface.
 void test_v2_router_ospf(void) {
     TEST("v2 router OSPF fields");
     const char* line = "2026-09-21T02:30:20+00:00 router.docker_building-lan ios: %OSPF-5-ADJCHG: Process 1, Nbr 172.20.0.9 on GigabitEthernet0/0 from LOADING to FULL (2 routes)";
@@ -629,7 +629,7 @@ void test_v2_router_ospf(void) {
     PASS();
 }
 
-// v2: router DHCPACK carries client MAC.
+// router DHCPACK carries client MAC.
 void test_v2_router_dhcp(void) {
     TEST("v2 router DHCP fields");
     const char* line = "2026-09-21T02:30:20+00:00 router.docker_building-lan dhcpd: DHCPACK to 172.20.100.14 (aa:bb:cc:53:32:25) via eth0";
@@ -641,7 +641,7 @@ void test_v2_router_dhcp(void) {
     PASS();
 }
 
-// v2: router route line carries gateway + route_dst.
+// router route line carries gateway + route_dst.
 void test_v2_router_route(void) {
     TEST("v2 router route fields");
     const char* line = "2026-09-21T02:32:06+00:00 router.docker_building-lan route: route,info route added dst-address=172.20.100.0/24 gateway=172.20.0.16 (2 routes)";
@@ -655,7 +655,7 @@ void test_v2_router_route(void) {
     PASS();
 }
 
-// v2: conntrack count is parsed.
+// conntrack count is parsed.
 void test_v2_conntrack(void) {
     TEST("v2 conntrack count field");
     const char* line = "2026-09-21T02:30:21+00:00 firewall.docker_building-lan fwdaemon: Connection tracking: 5 entries";
@@ -667,7 +667,7 @@ void test_v2_conntrack(void) {
     PASS();
 }
 
-// v2: JSON carries "v":2 and new keys, omits unset optionals.
+// JSON carries new keys, omits unset optionals.
 void test_v2_json_shape(void) {
     TEST("v2 JSON shape");
     const char* line = "2026-09-21T02:30:26+00:00 ap.docker_building-lan hostapd: wlan0: AP-STA-DEAUTH aa:bb:cc:4b:ea:09 reason=4";
@@ -675,8 +675,10 @@ void test_v2_json_shape(void) {
     if (!entry) { FAIL("returned NULL"); return; }
     char* json = to_json(entry);
     if (!json) { FAIL("to_json returned NULL"); free_entry(entry); return; }
-    if (!strstr(json, "\"v\":2"))
-        { FAIL("JSON missing \"v\":2"); free(json); free_entry(entry); return; }
+    if (json[0] != '{')
+        { FAIL("JSON should start with '{'"); free(json); free_entry(entry); return; }
+    if (strstr(json, "\"v\":"))
+        { FAIL("JSON should not carry version key \"v\""); free(json); free_entry(entry); return; }
     if (!strstr(json, "\"client_mac\":\"aa:bb:cc:4b:ea:09\""))
         { FAIL("JSON missing client_mac"); free(json); free_entry(entry); return; }
     if (!strstr(json, "\"reason\":4"))

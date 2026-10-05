@@ -146,7 +146,7 @@ static int extract_port_generic(const char *msg, int want_src) {
     return -1;
 }
 
-// v2: action (allow|deny|reject|close), normalized.
+// action (allow|deny|reject|close), normalized.
 static void extract_action(char* out, const char *low, int out_size ) {
     char buf[16];
     if (extract_kv(low, "act", buf, sizeof(buf))) {
@@ -335,7 +335,7 @@ void detect_device_type(log_entry_t* entry) {
     else snprintf(entry->device_type, sizeof(entry->device_type), "other");
 }
 
-// v2: MAC / client MAC / DHCP MAC (first MAC in line, routed by context).
+// MAC / client MAC / DHCP MAC (first MAC in line, routed by context).
 static void extract_mac(log_entry_t *entry, const char *msg, const char *low) {
     char mbuf[24];
     if (extract_first_mac(msg, mbuf, sizeof(mbuf))) {
@@ -350,7 +350,7 @@ static void extract_mac(log_entry_t *entry, const char *msg, const char *low) {
     }
 }
 
-// v2: VLAN id ("vlan 6", "VLAN1", "in vlan 10").
+// VLAN id ("vlan 6", "VLAN1", "in vlan 10").
 static void extract_vlan(int *out, const char *msg) {
     const char *vp = find_ci(msg, "vlan");
     if (vp) {
@@ -361,7 +361,7 @@ static void extract_vlan(int *out, const char *msg) {
     }
 }
 
-// v2: interface name + flap peer ("between port A and port B") + STP new root.
+// interface name + flap peer ("between port A and port B") + STP new root.
 static void extract_iface(log_entry_t *entry, const char *msg, const char *low) {
     if (find_iface_at(msg, low, 0, entry->ifname, sizeof(entry->ifname))) {
         const char *ap = find_ci(low, " and port ");
@@ -371,14 +371,14 @@ static void extract_iface(log_entry_t *entry, const char *msg, const char *low) 
             find_iface_at(msg, low, off, entry->peer_ifname, sizeof(entry->peer_ifname));
         }
     }
-    // v2: STP new root ("new root Gi0/5").
+    // STP new root ("new root Gi0/5").
     const char *rp = find_ci(low, "new root ");
     if (rp) {
         copy_token(msg + (rp - low) + 9, entry->stp_root, sizeof(entry->stp_root));
     }
 }
 
-// v2: AP radio (wlan0/wlan1).
+// AP radio (wlan0/wlan1).
 static void extract_radio(char *out, const char *msg, const char *low, int out_size) {
     const char *wp = find_ci(low, "wlan");
     if (wp && isdigit((unsigned char)wp[4])) {
@@ -392,7 +392,7 @@ static void extract_radio(char *out, const char *msg, const char *low, int out_s
     }
 }
 
-// v2: AP SSID ("(SSID Campus)" / "SSID=foo").
+// AP SSID ("(SSID Campus)" / "SSID=foo").
 static void extract_ssid(char *out, const char *msg, int out_size) {
     const char *sp = find_ci(msg, "ssid");
     if (sp) {
@@ -409,13 +409,13 @@ static void extract_ssid(char *out, const char *msg, int out_size) {
     }
 }
 
-// v2: AP reason code (reason=3 / reason=4).
+// AP reason code (reason=3 / reason=4).
 static void extract_reason(int *out, const char *msg) {
     int code = extract_kv_int(msg, "reason");
     if (code >= 0) *out = code;
 }
 
-// v2: AP signal + tx rate (signal=67 dBm, tx_rate=29Mbps).
+// AP signal + tx rate (signal=67 dBm, tx_rate=29Mbps).
 static void extract_signal(int *sig_out, int *rate_out, const char *msg) {
     int sig = extract_kv_int(msg, "signal");
     if (sig != -1) *sig_out = sig;
@@ -423,7 +423,7 @@ static void extract_signal(int *sig_out, int *rate_out, const char *msg) {
     if (rate > 0) *rate_out = rate;
 }
 
-// v2: AP EAP/auth outcome.
+// AP EAP/auth outcome.
 static void extract_eap(char *out, int out_size, const char *device_type, const char *low) {
     if (strcmp(device_type, "ap") != 0) return;
     if ((strstr(low, "auth_failed") != NULL) || contains_word(low, "failed") ||
@@ -438,7 +438,7 @@ static void extract_eap(char *out, int out_size, const char *device_type, const 
     }
 }
 
-// v2: router OSPF neighbor ("Nbr 172.20.0.9").
+// router OSPF neighbor ("Nbr 172.20.0.9").
 static void extract_ospf(char *out, const char *msg, const char *low, int out_size) {
     const char *np = find_ci(low, "nbr ");
     if (np) {
@@ -446,7 +446,7 @@ static void extract_ospf(char *out, const char *msg, const char *low, int out_si
     }
 }
 
-// v2: router gateway= and dst-address=.
+// router gateway= and dst-address=.
 static void extract_gateway(char *gw_out, int gw_size, char *dst_out, int dst_size, const char *msg) {
     char gbuf[46];
     if (extract_kv(msg, "gateway", gbuf, sizeof(gbuf)))
@@ -455,7 +455,7 @@ static void extract_gateway(char *gw_out, int gw_size, char *dst_out, int dst_si
         snprintf(dst_out, dst_size, "%.45s", gbuf);
 }
 
-// v2: connection tracking count ("tracking: 5 entries" / "conntrack: 5 ...").
+// connection tracking count ("tracking: 5 entries" / "conntrack: 5 ...").
 static void extract_conntrack(int *out, const char *low) {
     const char *cp = find_ci(low, "tracking:");
     if (!cp) cp = find_ci(low, "conntrack:");

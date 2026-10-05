@@ -43,7 +43,7 @@ class LogStream(DataTable):
                 "port": port,
                 "entity": entity,
             }
-            # v2 detail fields (indices 9..27 of SQL_LOGS); stored for the modal.
+            # Detail fields (indices 9..27 of SQL_LOGS); stored for the modal.
             v2_keys = (
                 "src_port", "action", "mac", "vlan_id",
                 "ifname", "peer_ifname", "stp_root", "client_mac", "ssid",

@@ -25,7 +25,7 @@ _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
     # Attributed identity for a row: AP rows key on client_mac, switch rows
     # on mac, everything else on src_ip. Returns None when unattributable
-    # (old rows without v2 fields behave as before).
+    # (old rows without these fields behave as before).
 def _identity(row):
     device = (row.get("device_type") or "")
     if device == "ap":
@@ -65,7 +65,7 @@ def detect_rules(rows, window_seconds=30):
     # Rule 2: Brute force (auth failures only) + separate deauth storm.
     # DEAUTH alone is normal WiFi roaming — never CRITICAL by itself.
     # Also detects repeated fw_block to sensitive ports (SSH/HTTP) as brute force.
-    # AP auth failures attribute to client_mac (v2); firewall to src_ip.
+    # AP auth failures attribute to client_mac; firewall to src_ip.
     ip_fails = defaultdict(int)
     ip_deauth = defaultdict(int)
     for row in rows:
