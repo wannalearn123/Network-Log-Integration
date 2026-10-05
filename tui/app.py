@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 # Real-time terminal dashboard for SISKAMLAN (Sistem Keamanan LAN).
-import sys
-from pathlib import Path
-
-# Add project root to path (must be before project imports)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.reactive import reactive
-from textual.containers import Horizontal
-from textual.widgets import Footer
-from db.init import get_connection
+from tui.theme import MONITORING_BLUE, BACKGROUND
+from tui.widgets.search_bar import SearchBar
+from tui.widgets.stats_bar import StatsBar
+from tui.widgets.about_screen import AboutScreen
+from tui.widgets.export_modal import ExportConfirmScreen
+from tui.csv_export import export_view, plan_export
+from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen, SecurityOverviewScreen
+from tui.widgets.anomaly_panel import AnomalyPanel
+from tui.widgets.log_stream import LogStream
 from tui.queries import (
     SQL_LOGS, SQL_LOGS_SEARCH,
     SQL_ANOMALIES, SQL_ANOMALIES_SEARCH,
     SQL_STATS_LOGS, SQL_STATS_ANOMALIES,
 )
-from tui.widgets.log_stream import LogStream
-from tui.widgets.anomaly_panel import AnomalyPanel
-from tui.widgets.detail_modal import LogDetailScreen, AnomalyDetailScreen, SecurityOverviewScreen
-from tui.csv_export import export_view, plan_export
-from tui.widgets.export_modal import ExportConfirmScreen
-from tui.widgets.about_screen import AboutScreen
-from tui.widgets.stats_bar import StatsBar
-from tui.widgets.search_bar import SearchBar
-from tui.theme import MONITORING_BLUE, BACKGROUND
+from db.init import get_connection
+from textual.widgets import Footer
+from textual.containers import Horizontal
+from textual.reactive import reactive
+from textual.binding import Binding
+from textual.app import App, ComposeResult
+import sys
+from pathlib import Path
+
+# Add project root to path (must be before project imports)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 # SISKAMLAN TUI Dashboard.

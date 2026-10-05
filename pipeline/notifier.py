@@ -31,7 +31,7 @@ def _enabled():
 
 
 def _min_severity():
-    return os.environ.get("NOTIFY_MIN_SEVERITY", "HIGH").strip().upper()
+    return os.environ.get("NOTIFY_MIN_SEVERITY").strip().upper()
 
 
 def _send_telegram(text):
@@ -42,12 +42,14 @@ def _send_telegram(text):
         return False
 
     chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
-    api_base = os.environ.get("TELEGRAM_API_BASE", DEFAULT_API_BASE).rstrip("/")
+    api_base = os.environ.get(
+        "TELEGRAM_API_BASE", DEFAULT_API_BASE).rstrip("/")
     url = f"{api_base}/bot{token}/sendMessage"
 
     ok_all = True
     for chat_id in chat_ids:
-        payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+        payload = json.dumps(
+            {"chat_id": chat_id, "text": text}).encode("utf-8")
         req = urllib.request.Request(
             url, data=payload, headers={"Content-Type": "application/json"}
         )
@@ -55,7 +57,8 @@ def _send_telegram(text):
             with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
                 body = resp.read().decode("utf-8", "replace")
                 if resp.status != 200:
-                    _log(f"Telegram API returned HTTP {resp.status} for {chat_id}: {body[:200]}")
+                    _log(f"Telegram API returned HTTP {
+                         resp.status} for {chat_id}: {body[:200]}")
                     ok_all = False
                     continue
                 data = json.loads(body)

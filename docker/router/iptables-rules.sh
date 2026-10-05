@@ -26,7 +26,7 @@ echo "[router] iptables rules applied"
     COUNTER=0
     while true; do
         COUNTER=$((COUNTER + 1))
-        BRAND=$((RANDOM % 2)) # 0=cisco, 1=mikrotik
+        BRAND=$((RANDOM % 2))
 
         # Interface status reports
         for iface in $(ls /sys/class/net/ | grep -v lo); do
@@ -69,7 +69,7 @@ echo "[router] iptables rules applied"
             fi
         fi
 
-        # Occasional route change events (keep "route change" anchor)
+        # Occasional route change events
         if [ $((COUNTER % 8)) -eq 0 ]; then
             if [ "$BRAND" -eq 0 ]; then
                 logger -t ios "%IP-5-ROUTE_CHANGE: Default route metric adjusted - route change"
@@ -82,31 +82,17 @@ echo "[router] iptables rules applied"
     done
 ) &
 
-# Routing-plane attack burst (control-plane compromise).
-# A rogue OSPF speaker never appears at L2 or in the data path, and the
-# firewall only sees the resulting traffic as ordinary flows — the only
-# trace is here, on the router itself.
-# One burst every ~3 min (6 x 30s): 8 adjacency resets toward one foreign
-# router-id (needs >=6 for ROUTE_CHURN).
-# Both brands emit "Nbr <router-id>", which the collector maps to src_ip +
-# ospf_nbr, so every row survives the detector's attributable-identity
-# filter and the burst attributes to a single peer.
-# Volume sits above the rule threshold with ~1.4x headroom (same margin as
-# the switch and AP generators) so window alignment jitter can't drop it
-# below. Fixed router-id per burst so the rules engine groups it while
-# background noise (random neighbours) stays well under.
-# No explicit labels; detection is pattern-based.
+# Attack: routing-plane burst, one every ~3 min.
+# Fixed rogue router-id per burst; noise uses random neighbours.
+# See docker/simulated-traffic.md.
 (
     COUNTER=0
     while true; do
         COUNTER=$((COUNTER + 1))
         if [ $((COUNTER % 6)) -eq 0 ]; then
-            # Rogue router-id — background noise uses random neighbours, so
-            # only this identity crosses the threshold.
             ROGUE_RID="6.6.6.6"
 
-            # --- OSPF rogue adjacency: foreign router-id keeps forming and
-            #     dropping adjacencies (MITM / LS poisoning signature) ---
+            # OSPF rogue adjacency resets
             for _ in $(seq 1 8); do
                 BRAND=$((RANDOM % 2))
                 if [ "$BRAND" -eq 0 ]; then
@@ -116,7 +102,7 @@ echo "[router] iptables rules applied"
                 fi
             done
         fi
-        sleep 30  # 6 iters x 30s = one burst every ~3 min
+        sleep 30
     done
 ) &
 

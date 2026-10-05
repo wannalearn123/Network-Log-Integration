@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Simulates hostapd/wpa_supplicant-style authentication logs
-# Since real hostapd needs wireless hardware, we simulate the log output
-# Background noise stays below rule thresholds; the attack loop at the
-# bottom emits insider WiFi bursts (deauth storm + auth brute-force).
+# Simulates hostapd/wpa_supplicant-style authentication logs.
+# Real hostapd needs wireless hardware; attack bursts at bottom.
+# See docker/simulated-traffic.md for thresholds and timing.
 
 generate_mac() {
     printf "aa:bb:cc:%02x:%02x:%02x" $((RANDOM%256)) $((RANDOM%256)) $((RANDOM%256))
@@ -29,7 +28,7 @@ for i in $(seq 0 4); do
     fi
 done
 
-# Ongoing simulation (dual-brand: 0-4 hostapd, 5-9 ruijie equivalents)
+# Ongoing simulation (dual-brand: hostapd + Ruijie equivalents)
 (
     while true; do
         MAC=$(generate_mac)
@@ -89,28 +88,23 @@ done
     done
 ) &
 
-# Insider WiFi attack bursts (lateral / over-the-air).
-# A deauth flood needs no LAN access at all — frames are unauthenticated —
-# and password guessing hits the AP directly, so the firewall never sees
-# either. One rotating burst every ~3 min (6 x 30s):
-#   deauth storm: 12x from one MAC (needs >=9 for DEAUTH_STORM, MEDIUM)
-#   auth brute:   15x failures, one MAC (needs >=12 for BRUTE_FORCE, CRITICAL)
-# Fixed identity per burst so the rules engine groups them; no labels.
+# Attack: insider WiFi bursts, one every ~3 min (alternating types).
+# Fixed MAC per burst; noise uses random MACs.
+# See docker/simulated-traffic.md.
 (
     COUNTER=0
     while true; do
         COUNTER=$((COUNTER + 1))
         if [ $((COUNTER % 6)) -eq 0 ]; then
             SLOT=$(( (COUNTER / 6) % 2 ))
-            # Fixed target MAC — background noise uses random MACs.
             TARGET_MAC="aa:bb:cc:99:88:77"
             if [ "$SLOT" -eq 0 ]; then
-                # --- Deauth storm: DoS / evil-twin setup signature ---
+                # Deauth storm
                 for _ in $(seq 1 12); do
                     logger -t hostapd "wlan0: AP-STA-DEAUTH $TARGET_MAC reason=4"
                 done
             else
-                # --- Auth brute-force: PSK/EAP guessing signature ---
+                # Auth brute-force
                 for _ in $(seq 1 15); do
                     logger -t hostapd "wlan0: AP-STA-FAILED $TARGET_MAC status=1 invalid_auth"
                 done

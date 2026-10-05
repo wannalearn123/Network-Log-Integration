@@ -25,8 +25,7 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
         BRAND=$((RANDOM % 2))
 
         if [ "$BRAND" -eq 0 ]; then
-            # netfilter LOG form. NOTE: kernel emits SPT=/DPT=, never SRC_PORT=
-            # (collector's src_keys[] only recognizes "SPT" -> see devices.c:131)
+            # netfilter LOG form: kernel emits SPT=/DPT= (see devices.c:131)
             IP_ID=$((RANDOM % 65535))
             LEN=$((40 + RANDOM % 120))
             TTL=$((60 - RANDOM % 16))
@@ -51,39 +50,31 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
             logger -t fortigate "CEF:0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward $ACT_TEXT|3|deviceExternalId=FGT100F$DEVID FTNTFGTlogid=$LOGID cat=traffic:forward src=$SRC dst=172.20.0.4 spt=$SRC_PORT dpt=$DST_PORT proto=$PNUM act=$ACT"
         fi
 
-        # NAT events (less frequent, no src_ip needed)
+        # NAT events (less frequent)
         if [ $((COUNTER % 5)) -eq 0 ]; then
             NAT_SRC="172.20.100.$((1 + RANDOM % 50))"
             logger -t fwdaemon "[NAT] $NAT_SRC -> masqueraded via 172.20.0.4"
         fi
 
-        sleep 1  # Produce firewall event every second (60/min)
+        sleep 1
     done
 ) &
 
-# Attack patterns (background loop)
-# Generates realistic traffic patterns that rules engine detects.
-# NO explicit labels — detection is pattern-based.
-#
-# Attack frequency (demo mode):
-#   One rotating attack every ~3 min: scan -> brute -> DDoS-lite
-#   Volumes set above rule thresholds so each one flags.
-#
-# Normal traffic still dominates background events.
-
+# Attack: rotating burst every ~3 min (scan -> brute -> DDoS-lite).
+# Single src_ip per burst so per-IP thresholds fire.
+# See docker/simulated-traffic.md.
 (
     COUNTER=0
     while true; do
         COUNTER=$((COUNTER + 1))
 
-        # One attack every 6 x 30s = ~3 min, rotating type
+        # One attack every ~3 min, rotating type
         if [ $((COUNTER % 6)) -eq 0 ]; then
-            # One attacker per burst: the whole burst keeps a single src_ip
-            # so per-IP rule thresholds (>=12 ports / >=12 fails) still fire.
+            # One attacker per burst
             ATTACKER_IP=${ATTACKER_IPS[$((RANDOM % ${#ATTACKER_IPS[@]}))]}
             ATTACK_SLOT=$(( (COUNTER / 6 - 1) % 3 ))
 
-            # --- Port scan: 20 unique ports, needs >=12 for PORT_SCAN ---
+            # Port scan: 20 unique ports
             if [ "$ATTACK_SLOT" -eq 0 ]; then
                 for SCAN_PORT in $(seq 4000 4019); do
                     SCAN_SRC_PORT=$((1024 + RANDOM % 60000))
@@ -97,7 +88,7 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
                 done
             fi
 
-            # --- Brute force: 20 attempts to :22, needs >=12 for BRUTE_FORCE ---
+            # Brute force: 20 attempts to :22
             if [ "$ATTACK_SLOT" -eq 1 ]; then
                 for _ in $(seq 1 20); do
                     AUTH_SRC_PORT=$((1024 + RANDOM % 60000))
@@ -111,7 +102,7 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
                 done
             fi
 
-            # --- DDoS-lite: 260 packets to :80, needs >=100 for HIGH_DROP_RATE ---
+            # DDoS-lite: 260 packets to :80
             if [ "$ATTACK_SLOT" -eq 2 ]; then
                 for _ in $(seq 1 260); do
                     FLOOD_SRC_PORT=$((1024 + RANDOM % 60000))
@@ -126,13 +117,11 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
             fi
         fi
 
-        sleep 30  # 6 iters x 30s = one attack every ~3 min
+        sleep 30
     done
 ) &
 
-# Generate some traffic to trigger nftables LOG rules
-# (real packets through the firewall, not just logger)
-
+# Real packets through the firewall (triggers nftables LOG rules)
 (
     while true; do
         # TCP connections to trigger forward chain logging
