@@ -7,8 +7,10 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
     while true; do
         COUNTER=$((COUNTER + 1))
 
-        if [ -f /proc/net/nf_conntrack ]; then
-            CONNS=$(wc -l < /proc/net/nf_conntrack 2>/dev/null || echo "0")
+        # -r not -f: a readable but access-denied file would leak the shell's
+        # "Permission denied" to stderr (2>/dev/null can't catch a failed <).
+        if [ -r /proc/net/nf_conntrack ]; then
+            CONNS=$(wc -l < /proc/net/nf_conntrack)
             logger -t fwdaemon "Connection tracking: $CONNS entries"
         fi
 
@@ -25,8 +27,17 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
         BRAND=$((RANDOM % 2))
 
         if [ "$BRAND" -eq 0 ]; then
-            # iptables/nftables kernel form (SRC=/DPT=)
-            logger -t kernel "[FW $ACTION] IN=eth0 OUT= SRC=$SRC DST=172.20.0.4 PROTO=$PROTO SRC_PORT=$SRC_PORT DPT=$DST_PORT"
+            # netfilter LOG form. NOTE: kernel emits SPT=/DPT=, never SRC_PORT=
+            # (collector's src_keys[] only recognizes "SPT" -> see devices.c:131)
+            IP_ID=$((RANDOM % 65535))
+            LEN=$((40 + RANDOM % 120))
+            TTL=$((60 - RANDOM % 16))
+            case "$PROTO" in
+                TCP)  FLAGS="DF WINDOW=65535 MSS=1460 SYN ";;
+                UDP)  FLAGS="";;
+                *)    FLAGS="TYPE=8 CODE=0 ";;
+            esac
+            logger -t kernel "[FW $ACTION] IN=eth0 OUT= SRC=$SRC DST=172.20.0.4 LEN=$LEN TOS=0x00 TTL=$TTL ID=$IP_ID ${FLAGS}PROTO=$PROTO SPT=$SRC_PORT DPT=$DST_PORT"
         else
             # FortiGate CEF traffic log (real format)
             case "$PROTO" in
@@ -39,7 +50,7 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
             esac
             LOGID=$(printf '%010d' $COUNTER)
             DEVID=$(printf '%012d' $((COUNTER + RANDOM % 10000)))
-            logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward $ACT_TEXT|3|deviceExternalId=FGT100F$DEVID FTNTFGTlogid=$LOGID cat=traffic:forward src=$SRC dst=172.20.0.4 spt=$SRC_PORT dpt=$DST_PORT proto=$PNUM act=$ACT"
+            logger -t fortigate "CEF:0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward $ACT_TEXT|3|deviceExternalId=FGT100F$DEVID FTNTFGTlogid=$LOGID cat=traffic:forward src=$SRC dst=172.20.0.4 spt=$SRC_PORT dpt=$DST_PORT proto=$PNUM act=$ACT"
         fi
 
         # NAT events (less frequent, no src_ip needed)
@@ -80,9 +91,10 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
                     SCAN_SRC_PORT=$((1024 + RANDOM % 60000))
                     BRAND=$((RANDOM % 2))
                     if [ "$BRAND" -eq 0 ]; then
-                        logger -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 PROTO=TCP SRC_PORT=$SCAN_SRC_PORT DPT=$SCAN_PORT"
+                        LEN=$((40 + RANDOM % 120))
+                        logger -p kern.warning -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 LEN=$LEN TOS=0x00 TTL=64 ID=$((RANDOM % 65535)) DF SYN PROTO=TCP SPT=$SCAN_SRC_PORT DPT=$SCAN_PORT"
                     else
-                        logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$SCAN_SRC_PORT dpt=$SCAN_PORT proto=6 act=deny"
+                        logger -t fortigate "CEF:0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$SCAN_SRC_PORT dpt=$SCAN_PORT proto=6 act=deny"
                     fi
                 done
             fi
@@ -93,9 +105,10 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
                     AUTH_SRC_PORT=$((1024 + RANDOM % 60000))
                     BRAND=$((RANDOM % 2))
                     if [ "$BRAND" -eq 0 ]; then
-                        logger -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 PROTO=TCP SRC_PORT=$AUTH_SRC_PORT DPT=22"
+                        LEN=$((40 + RANDOM % 120))
+                        logger -p kern.warning -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 LEN=$LEN TOS=0x00 TTL=64 ID=$((RANDOM % 65535)) DF SYN PROTO=TCP SPT=$AUTH_SRC_PORT DPT=22"
                     else
-                        logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$AUTH_SRC_PORT dpt=22 proto=6 act=deny"
+                        logger -t fortigate "CEF:0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$AUTH_SRC_PORT dpt=22 proto=6 act=deny"
                     fi
                 done
             fi
@@ -106,9 +119,10 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
                     FLOOD_SRC_PORT=$((1024 + RANDOM % 60000))
                     BRAND=$((RANDOM % 2))
                     if [ "$BRAND" -eq 0 ]; then
-                        logger -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 PROTO=TCP SRC_PORT=$FLOOD_SRC_PORT DPT=80 SYN"
+                        LEN=$((40 + RANDOM % 120))
+                        logger -p kern.warning -t kernel "[FW DROP] IN=eth0 SRC=$ATTACKER_IP DST=172.20.0.4 LEN=$LEN TOS=0x00 TTL=64 ID=$((RANDOM % 65535)) DF SYN PROTO=TCP SPT=$FLOOD_SRC_PORT DPT=80"
                     else
-                        logger -t fortigate "CEF: 0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$FLOOD_SRC_PORT dpt=80 proto=6 act=deny"
+                        logger -t fortigate "CEF:0|Fortinet|FortiGate|v7.0.0|00010|traffic:forward deny|3|deviceExternalId=FGT100F0000000013 FTNTFGTlogid=0000000013 cat=traffic:forward src=$ATTACKER_IP dst=172.20.0.4 spt=$FLOOD_SRC_PORT dpt=80 proto=6 act=deny"
                     fi
                 done
             fi
