@@ -7,10 +7,8 @@ ATTACKER_IPS=("172.20.0.50" "172.20.0.51")
     while true; do
         COUNTER=$((COUNTER + 1))
 
-        # -r not -f: a readable but access-denied file would leak the shell's
-        # "Permission denied" to stderr (2>/dev/null can't catch a failed <).
-        if [ -r /proc/net/nf_conntrack ]; then
-            CONNS=$(wc -l < /proc/net/nf_conntrack)
+        if [ -f /proc/net/nf_conntrack ]; then
+            CONNS=$(wc -l < /proc/net/nf_conntrack 2>/dev/null || echo "0")
             logger -t fwdaemon "Connection tracking: $CONNS entries"
         fi
 
