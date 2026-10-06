@@ -18,13 +18,11 @@ MAX_BATCH = 10000  # safety cap: drop oldest on backpressure, never grow unbound
 running = True
 
 
-# Signal the ingest loop to exit.
 def stop():
     global running
     running = False
 
 
-# Read JSON lines from collector stdout, insert into PostgreSQL.
 def run_ingest(collector_stdout):
     global running
 
@@ -43,8 +41,6 @@ def run_ingest(collector_stdout):
 
         print("[INGEST] Connected to PostgreSQL", file=sys.stderr)
 
-        # Flush batch; on failure retry row-by-row and skip poison rows.
-        # Connection errors are re-raised so the watchdog stops the pipeline.
         def flush_batch():
             nonlocal total, last_flush
             if not batch:
@@ -135,14 +131,13 @@ def run_ingest(collector_stdout):
                     chunk = os.read(fd, 65536)
                 except OSError:
                     break
-                if not chunk:  # EOF — collector closed stdout
+                if not chunk:
                     if buf:
                         handle_line(bytes(buf).decode("utf-8", errors="replace"))
                         buf.clear()
                     break
                 bytes_read += len(chunk)
                 buf.extend(chunk)
-                # Emit only complete lines; half-line stays buffered
                 while True:
                     nl = buf.find(b"\n")
                     if nl < 0:
@@ -151,15 +146,11 @@ def run_ingest(collector_stdout):
                     del buf[:nl + 1]
                     handle_line(raw.decode("utf-8", errors="replace"))
                 if buf:
-                    # Data arrived but no full line yet — don't block, re-loop
                     partial_waits += 1
-            # else: select timeout — running re-checked at loop top for fast shutdown
 
-            # Time-bounded flush — runs on data and idle paths alike
             if batch and (time.monotonic() - last_flush) >= FLUSH_INTERVAL:
                 flush_batch()
 
-        # Flush remaining
         flush_batch()
 
         print(f"[INGEST] Done — {total} total entries, {dropped} dropped on backpressure, "

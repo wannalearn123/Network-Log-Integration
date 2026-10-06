@@ -21,10 +21,9 @@ COLLECTOR_BIN = "./collector/log_collector"
 running = True
 _stdin_lock = threading.Lock()
 
-# Tail a file from the end, feed new lines to collector stdin.
 def tail_file(filepath, stdin_pipe):
     with open(filepath, "r") as f:
-        f.seek(0, 2)  # seek to end
+        f.seek(0, 2)
         while running:
             line = f.readline()
             if line:
@@ -61,14 +60,12 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Find log files
     log_dir = Path("data/syslog")
     log_files = sorted(log_dir.glob("*.log"))
     if not log_files:
         print("[ERROR] No log files found in data/syslog/", file=sys.stderr)
         sys.exit(1)
 
-    # Exit if the collector binary is missing.
     if not Path(COLLECTOR_BIN).exists():
         print(f"[ERROR] Missing {
               COLLECTOR_BIN} — run: make -C collector", file=sys.stderr)
@@ -78,11 +75,9 @@ def main():
     for f in log_files:
         print(f"[INFO]   - {f.name}", file=sys.stderr)
 
-    # Start collector
     collector = start_collector()
     print("[INFO] C collector started", file=sys.stderr)
 
-    # Start tail threads
     tail_threads = []
     for log_file in log_files:
         t = threading.Thread(
@@ -93,7 +88,6 @@ def main():
         t.start()
         tail_threads.append(t)
 
-    # Start ingest thread
     ingest_thread = threading.Thread(
         target=run_ingest,
         args=(collector.stdout,),
@@ -101,7 +95,6 @@ def main():
     )
     ingest_thread.start()
 
-    # Start anomaly detector thread
     detector_thread = threading.Thread(
         target=start_detector,
         args=(30,),
@@ -110,7 +103,6 @@ def main():
     detector_thread.start()
     print("[INFO] Anomaly detector started", file=sys.stderr)
 
-    # Watchdog: stop if any component dies.
     print("[INFO] Pipeline running — Ctrl+C to stop", file=sys.stderr)
     failed = False
     while running:
@@ -132,7 +124,6 @@ def main():
             break
         time.sleep(1)
 
-    # Cleanup
     try:
         collector.stdin.close()
     except Exception:

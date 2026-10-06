@@ -11,9 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# ML scoring — supervised RF bundle, firewall-device traffic only
-from pipeline.ml_engine import (load_model, score_firewall_window,
-                                classify_window_jev)  # noqa: F401
+from pipeline.ml_engine import classify_window_jev
 
 WINDOW_INTERVAL = 15  # seconds between detection cycles
 WINDOW_SIZE = 30  # seconds of logs to query
@@ -88,11 +86,6 @@ def start_detector(interval=WINDOW_INTERVAL):
 
     print("[DETECTOR] Starting anomaly detector", file=sys.stderr)
 
-    # supervised RF path disabled: a UNSW-NB15 flow is not a syslog row
-    #   model = load_model(expected_window_seconds=WINDOW_SIZE)
-    #   ml_score, ml_severity, ml_detail = score_firewall_window(
-    #       rows, WINDOW_SIZE, model)
-
     try:
         conn = get_connection()
     except Exception as e:
@@ -102,12 +95,11 @@ def start_detector(interval=WINDOW_INTERVAL):
     cursor = conn.cursor()
 
     while running:
-        _prune_last_insert()  # prevent unbounded _last_insert growth
+        _prune_last_insert()
         try:
-            # 1. Query the last WINDOW_SIZE seconds of logs
             rows = query_window(cursor, WINDOW_SIZE)
             try:
-                conn.commit()  # release read snapshot so admin TRUNCATE never starves
+                conn.commit()
             except Exception:
                 pass
             if not rows:
@@ -116,20 +108,13 @@ def start_detector(interval=WINDOW_INTERVAL):
 
             rows_with_ip = [r for r in rows
                               if r.get('src_ip') or r.get('mac') or r.get('client_mac')
-                              # stp_event rows carry no IP/MAC by nature (a root
-                              # change names interfaces, not hosts); Rule 6 counts
-                              # rows, not identities, so let them through.
                               or r.get('event') == 'stp_event']
             rule_hits = detect_rules(rows_with_ip, WINDOW_SIZE)
 
             ml_score = 0.0
             ml_severity = "LOW"
             ml_detail = {"scored": 0, "high": 0}
-            # if model is not None:
-            #     ml_score, ml_severity, ml_detail = score_firewall_window(
-            #         rows, WINDOW_SIZE, model)
 
-            # 3. Combine all results — one anomaly per hit, top severity first
             ranked_hits = sorted(
                 rule_hits,
                 key=lambda h: SEV_RANK.get(h.get("severity", "LOW"), 0),
@@ -138,7 +123,6 @@ def start_detector(interval=WINDOW_INTERVAL):
             anomalies = combine_results(
                 ranked_hits, ml_score, ml_severity, rows, WINDOW_SIZE, ml_detail)
 
-            # 4. Insert each hit (merge repeats into its own row)
             if anomalies:
                 for hit, anomaly in zip(ranked_hits, anomalies):
                     key = merge_signature(hit)
@@ -173,8 +157,6 @@ def start_detector(interval=WINDOW_INTERVAL):
                             f"{anomaly['description']}",
                             file=sys.stderr,
                         )
-                        # Alert on fresh inserts only — repeats are merged above
-                        # and must not spam the notification channel.
                         notify(
                             anomaly["severity"],
                             anomaly["description"],

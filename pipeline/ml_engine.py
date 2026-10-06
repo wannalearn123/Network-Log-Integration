@@ -195,29 +195,11 @@ def score_firewall_window(rows, window_seconds, bundle):
     return best, _severity(best, thresholds), detail
 
 
-# --- ML classification layer: System One decision API -------------------------
-# Layer 2 of 2. The rules engine stays authoritative and is never suppressed by
-# this. ONE typed question is asked per detection window:
-#   noul: "Does this log window contain a network attack?"
-#        -> probability of true + confidence
-#
-# The state is an AGGREGATE summary, not a log dump. Every attack signature
-# this system knows is a rate (20 unique ports, 12 auth failures, 150 drops
-# per window), and a rate is invisible in any single line — two rows from a
-# port scan are byte-identical. So the state leads with counts per event, per
-# entity and unique-port counts, and only then carries a few sample lines for
-# context. The API returns typed values, not free text, so there is nothing to
-# parse and no prose to hallucinate.
-#
-# Only the endpoint comes from .env — this module has no hardcoded host, so
-# switching provider is a config edit, not a code edit:
-#   ENABLE_JEV_CLASSIFIER=1     master switch (default off)
-#   JEV_API_BASE=...            full endpoint, e.g. 127.0.0.1:8080/v1/systemone
-#                               (a bare host:port gains an http:// scheme)
-#   JEV_API_KEY=...             bearer token; empty for local servers
-#   JEV_MIN_CONFIDENCE=0.6      below this the answer is discarded
-#
-# Never raises: ML failures must not crash the detector.
+# --- JEV second-opinion layer (rules stay authoritative, never suppressed) ---
+# Asks one typed noul per window: "Does this log window contain a network attack?"
+# State is aggregate counts (rates are invisible in single lines) plus a few
+# sample lines. Config via .env: ENABLE_JEV_CLASSIFIER, JEV_API_BASE,
+# JEV_API_KEY, JEV_MIN_CONFIDENCE. Never raises.
 
 import json as _json
 import os as _os

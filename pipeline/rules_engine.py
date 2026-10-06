@@ -23,10 +23,8 @@ SENSITIVE_PORTS = {22, 443, 3389, 21, 23}  # SSH, HTTPS, RDP, FTP, Telnet (NOT 8
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
-    # Attributed identity for a row: AP rows key on client_mac, switch rows
-    # on mac, everything else on src_ip. Returns None when unattributable
-    # (old rows without these fields behave as before).
 def _identity(row):
+    """Attributed identity: AP -> client_mac, switch -> mac, else src_ip."""
     device = (row.get("device_type") or "")
     if device == "ap":
         cm = row.get("client_mac")
@@ -40,10 +38,8 @@ def _identity(row):
     return str(src)
 
 
-    # Analyze log rows for known attack patterns. Returns list of hit dicts.
-    # Each hit carries "entity" (IP or MAC) for merging/attribution plus the
-    # legacy "src_ip" key when the entity is an IP.
 def detect_rules(rows, window_seconds=30):
+    """Match log rows against known attack patterns. Returns list of hits."""
     window_seconds = max(1, int(window_seconds or 30))
     hits = []
 
