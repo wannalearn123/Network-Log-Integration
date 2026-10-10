@@ -1,4 +1,6 @@
 import os
+import sys
+import threading
 from pathlib import Path
 
 import psycopg2
@@ -19,7 +21,80 @@ def get_connection():
         user=os.environ.get("PGUSER", "monitor"),
         password=os.environ.get("PGPASSWORD", "monitor"),
         connect_timeout=int(os.environ.get("PGCONNECT_TIMEOUT", "3")),
-        options="-c search_path=public"
+        options="-c search_path=public -c statement_timeout=10000"
+    )
+
+
+def get_connection_retry(stop_event=None, attempts=10):
+    """Bounded startup retry; shutdown interrupts the backoff."""
+    stop_event = stop_event or threading.Event()
+    for attempt in range(attempts):
+        if stop_event.is_set():
+            return None
+        try:
+            conn = get_connection()
+            ensure_runtime_schema(conn)
+            return conn
+        except psycopg2.OperationalError:
+            if attempt == attempts - 1:
+                raise
+            print("[DB] Waiting for PostgreSQL...", file=sys.stderr)
+            if stop_event.wait(min(attempt + 1, 5)):
+                return None
+
+
+def ensure_runtime_schema(conn):
+    """Create runtime tables when connecting to a pre-migration volume."""
+    with conn.cursor() as cursor:
+        # Ingest and detector can connect concurrently on first startup.
+        # Serialize CREATE TABLE so PostgreSQL does not race while creating
+        # the table's implicit composite type.
+        cursor.execute("SELECT pg_advisory_xact_lock(81726391)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS detection_cooldowns (
+                signature TEXT PRIMARY KEY,
+                anomaly_id INTEGER NOT NULL REFERENCES anomalies(id) ON DELETE CASCADE,
+                repeat_count INTEGER NOT NULL DEFAULT 1 CHECK (repeat_count > 0),
+                last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_cooldowns_last_seen ON detection_cooldowns (last_seen)")
+    conn.commit()
+
+
+def prune_history(cursor):
+    """Hourly retention; zero days explicitly disables a table's retention."""
+    for table, variable, default in (("logs", "LOG_RETENTION_DAYS", "7"),
+                                     ("anomalies", "ANOMALY_RETENTION_DAYS", "30")):
+        days = int(os.environ.get(variable, default))
+        if days < 0:
+            raise ValueError(f"{variable} must be nonnegative")
+        if days:
+            cursor.execute(f"DELETE FROM {table} WHERE timestamp < NOW() - make_interval(days => %s)", (days,))
+    cursor.execute("DELETE FROM detection_cooldowns WHERE last_seen < NOW() - INTERVAL '1 day'")
+
+
+def cooldown_signature(hit):
+    return f"{hit.get('type', '?')}|{hit.get('entity') or hit.get('src_ip') or '-'}"
+
+
+def get_cooldown(cursor, signature):
+    cursor.execute(
+        "SELECT anomaly_id, repeat_count, EXTRACT(EPOCH FROM (NOW() - last_seen)) "
+        "FROM detection_cooldowns WHERE signature = %s",
+        (signature,),
+    )
+    row = cursor.fetchone()
+    return row if row else None
+
+
+def save_cooldown(cursor, signature, anomaly_id, repeat_count):
+    cursor.execute(
+        "INSERT INTO detection_cooldowns (signature, anomaly_id, repeat_count, last_seen) "
+        "VALUES (%s, %s, %s, NOW()) "
+        "ON CONFLICT (signature) DO UPDATE SET anomaly_id = EXCLUDED.anomaly_id, "
+        "repeat_count = EXCLUDED.repeat_count, last_seen = NOW()",
+        (signature, anomaly_id, repeat_count),
     )
 
 
@@ -70,6 +145,7 @@ def query_window(cursor, window_seconds=60):
         f"""SELECT {_LOG_COLS_SQL}
         FROM logs
         WHERE timestamp >= NOW() - make_interval(secs => %s)
+          AND timestamp <= NOW()
         ORDER BY timestamp""",
         (window_seconds,),
     )

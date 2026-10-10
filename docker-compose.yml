@@ -16,8 +16,6 @@ services:
     ports:
       - "5140:514/tcp"
       - "5140:514/udp"
-      - "514:514/tcp"
-      - "514:514/udp"
     volumes:
       - ./data/syslog:/var/log/remote
     healthcheck:
@@ -41,10 +39,10 @@ services:
       POSTGRES_PASSWORD: ${PGPASSWORD}
       POSTGRES_DB: ${PGDATABASE}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U monitor -d network_logs"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -99,3 +97,5 @@ services:
     restart: unless-stopped
 
 
+volumes:
+  pgdata:

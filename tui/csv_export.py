@@ -20,7 +20,7 @@ LOG_COLUMNS = [
 
 # Column order for the anomaly export. Keys are AnomalyPanel._rows keys.
 ANOMALY_COLUMNS = [
-    "time", "severity", "score", "description",
+    "id", "time", "severity", "score", "repeat_count", "description",
 ]
 
 

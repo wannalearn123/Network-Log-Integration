@@ -37,14 +37,16 @@ LIMIT 80
 """
 
 SQL_ANOMALIES = """
-SELECT id, timestamp, severity, anomaly_score, description
+SELECT id, timestamp, severity, anomaly_score, description,
+       COALESCE((features->>'repeat_count')::int, 1) AS repeat_count
 FROM anomalies
 ORDER BY timestamp DESC
 LIMIT 30
 """
 
 SQL_ANOMALIES_SEARCH = """
-SELECT id, timestamp, severity, anomaly_score, description
+SELECT id, timestamp, severity, anomaly_score, description,
+       COALESCE((features->>'repeat_count')::int, 1) AS repeat_count
 FROM anomalies
 WHERE description ILIKE %s ESCAPE '\\'
    OR severity ILIKE %s ESCAPE '\\'
@@ -71,10 +73,10 @@ FROM anomalies
 
 SQL_SECURITY_SOURCES = """
 SELECT
-    (regexp_match(description, 'from ([0-9A-Za-z.:_-]+)'))[1] AS src_ip,
+    features->>'entity' AS src_ip,
     COUNT(*) AS cnt
 FROM anomalies
-WHERE description ILIKE '%from %'
+WHERE features->>'entity' IS NOT NULL
 GROUP BY src_ip
 ORDER BY cnt DESC
 LIMIT 5
@@ -82,17 +84,7 @@ LIMIT 5
 
 SQL_SECURITY_DETECTIONS = """
 SELECT
-    CASE
-        WHEN description ILIKE '%Port scan%' THEN 'Port Scan'
-        WHEN description ILIKE '%Brute force%' THEN 'Brute Force'
-        WHEN description ILIKE '%Traffic flood%' THEN 'Traffic Flood'
-        WHEN description ILIKE '%Deauth storm%' THEN 'Deauth Storm'
-        WHEN description ILIKE '%firewall drop%' THEN 'High Drop Rate'
-        WHEN description ILIKE '%MAC flap%' THEN 'MAC Flap'
-        WHEN description ILIKE '%STP instability%' THEN 'STP Flap'
-        WHEN description ILIKE '%Route churn%' THEN 'Route Churn'
-        ELSE 'Other'
-    END AS detection_type,
+    COALESCE(features->>'type', 'UNKNOWN') AS detection_type,
     COUNT(*) AS cnt
 FROM anomalies
 GROUP BY detection_type

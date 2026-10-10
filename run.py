@@ -8,27 +8,36 @@ import signal
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-VENV_PYTHON = PROJECT_ROOT / "venv" / "bin" / "python"
+VENV_PYTHON = sys.executable
 
 orchestrator_proc = None
+tui_proc = None
 
 
 def cleanup(sig=None, frame=None):
     print("\n[LAUNCHER] Shutting down...", file=sys.stderr)
+    if tui_proc and tui_proc.poll() is None:
+        tui_proc.terminate()
+        try:
+            tui_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            tui_proc.kill()
+            tui_proc.wait()
     if orchestrator_proc and orchestrator_proc.poll() is None:
         orchestrator_proc.terminate()
         try:
-            orchestrator_proc.wait(timeout=5)
+            orchestrator_proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             print("[LAUNCHER] Orchestrator did not exit — killing", file=sys.stderr)
             orchestrator_proc.kill()
             orchestrator_proc.wait()
     print("[LAUNCHER] Stopped", file=sys.stderr)
-    sys.exit(0)
+    if sig is not None:
+        sys.exit(128 + sig)
 
 
 def main():
-    global orchestrator_proc
+    global orchestrator_proc, tui_proc
 
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
@@ -69,7 +78,12 @@ def main():
             [str(VENV_PYTHON), str(PROJECT_ROOT / "tui" / "app.py")],
             cwd=str(PROJECT_ROOT),
         )
-        tui_proc.wait()
+        while tui_proc.poll() is None:
+            if orchestrator_proc.poll() is not None:
+                raise RuntimeError("Pipeline stopped; see logs/orchestrator.log")
+            time.sleep(0.2)
+        if tui_proc.returncode:
+            raise SystemExit(tui_proc.returncode)
     except KeyboardInterrupt:
         pass
     finally:
