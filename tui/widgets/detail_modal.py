@@ -98,6 +98,7 @@ class AnomalyDetailScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="anomaly-card"):
+            yield Static(f"ID: {self.row.get('id', '')} · Repeats: {self.row.get('repeat_count', 1)}")
             yield Static(f"[bold]Severity:[/] {self.row.get("severity", "")}")
             yield Static(f"[bold]Score:[/]   {self.row.get("score", "")}")
             yield Static(f"[bold]Description:[/] {self.row.get("description", "")}")
@@ -137,6 +138,8 @@ class SecurityOverviewScreen(ModalScreen):
         sources = []
         detections = []
 
+        conn = None
+        error = None
         try:
             conn = get_connection()
             cur = conn.cursor()
@@ -155,12 +158,17 @@ class SecurityOverviewScreen(ModalScreen):
             cur.close()
             conn.close()
         except Exception:
-            pass
+            error = "Database unavailable — overview could not be loaded."
+        finally:
+            if conn is not None:
+                conn.close()
 
         max_src = sources[0][1] if sources else 1
 
         with Vertical(id="overview-card"):
             yield Static("[bold white]SECURITY OVERVIEW[/]")
+            if error:
+                yield Static(error, markup=False)
             yield Static("─" * 44)
             yield Static("")
             yield Static(f"  CRITICAL     [bold red]{sev_crit}[/]")

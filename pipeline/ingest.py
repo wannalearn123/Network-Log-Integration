@@ -3,12 +3,13 @@ import os
 import select
 import sys
 import time
+import threading
 from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from db.init import get_connection, insert_log_batch, insert_log_entry
+from db.init import get_connection_retry, insert_log_batch, insert_log_entry
 import psycopg2
 
 
@@ -23,11 +24,14 @@ def stop():
     running = False
 
 
-def run_ingest(collector_stdout):
+def run_ingest(collector_stdout, stop_event=None):
     global running
 
+    stop_event = stop_event or threading.Event()
     try:
-        conn = get_connection()
+        conn = get_connection_retry(stop_event)
+        if conn is None:
+            return
     except Exception as e:
         print(f"[INGEST] FATAL: PostgreSQL unreachable: {e}", file=sys.stderr)
         raise
@@ -120,7 +124,7 @@ def run_ingest(collector_stdout):
                           file=sys.stderr)
             batch.append(entry)
 
-        while running:
+        while running and not stop_event.is_set():
             try:
                 ready, _, _ = select.select([fd], [], [], 1.0)
             except (OSError, ValueError):

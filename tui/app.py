@@ -6,6 +6,8 @@ from textual.reactive import reactive
 from textual.binding import Binding
 from textual.app import App, ComposeResult
 import sys
+import time
+import concurrent.futures
 from pathlib import Path
 
 # Add project root to path (must be before project imports)
@@ -34,6 +36,10 @@ class NetworkMonitor(App):
         super().__init__(*args, **kwargs)
         self.register_theme(MONITORING_BLUE)
         self.theme = "monitoring-blue"
+        self._connection = None
+        self._stats_updated = 0.0
+        self._refresh_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._refresh_future = None
 
     CSS = f"""
     Screen {{
@@ -143,14 +149,23 @@ class NetworkMonitor(App):
     def refresh_data(self):
         if self.paused:
             return
+        if self._refresh_future is not None and not self._refresh_future.done():
+            return
+        search = self._search_bar.search_text.strip()
+        self._last_search = search
+        self._refresh_future = self._refresh_executor.submit(self._fetch_data, search)
+        self.set_timer(0.05, self._poll_refresh)
 
-        conn = cur = None
+    def _poll_refresh(self):
+        if not self._refresh_future.done():
+            self.set_timer(0.05, self._poll_refresh)
+            return
+        self._refresh_complete(self._refresh_future)
+
+    def _fetch_data(self, search):
+        conn = get_connection()
         try:
-            conn = get_connection()
             cur = conn.cursor()
-
-            search = self._search_bar.search_text.strip()
-            self._last_search = search
             # Escape LIKE wildcards so user input is treated literally.
             # With ESCAPE '\\' in SQL: \% = literal %, \_ = literal _
             if search:
@@ -165,42 +180,56 @@ class NetworkMonitor(App):
                             (like,) * 10)
             else:
                 cur.execute(SQL_LOGS)
-            self._log_table.populate(cur.fetchall())
+            logs = cur.fetchall()
 
             if like:
                 cur.execute(SQL_ANOMALIES_SEARCH, (like, like))
             else:
                 cur.execute(SQL_ANOMALIES)
-            self._anom_table.populate(cur.fetchall())
+            anomalies = cur.fetchall()
 
-            cur.execute(SQL_STATS_LOGS)
-            r = cur.fetchone()
-            total, hour, devices = r or (0,) * 3
+            stats = None
+            if time.monotonic() - self._stats_updated >= 15:
+                cur.execute(SQL_STATS_LOGS)
+                r = cur.fetchone()
+                total, hour, devices = r or (0,) * 3
 
-            cur.execute(SQL_STATS_ANOMALIES)
-            r = cur.fetchone()
-            anom, anom_h, c, h, m, lo = r or (0,) * 6
-            stats = {
-                "total_logs": total, "logs_1h": hour, "active_devices": devices,
-                "total_anomalies": anom, "anomalies_1h": anom_h,
-                "sev_crit": c, "sev_high": h, "sev_med": m, "sev_low": lo,
-            }
-            self._status_bar.update_stats(stats, paused=self.paused)
-            self._last_stats = stats
-
-        except Exception as e:
-            self.title = f"Error: {e}"
+                cur.execute(SQL_STATS_ANOMALIES)
+                r = cur.fetchone()
+                anom, anom_h, c, h, m, lo = r or (0,) * 6
+                stats = {"total_logs": total, "logs_1h": hour, "active_devices": devices,
+                         "total_anomalies": anom, "anomalies_1h": anom_h,
+                         "sev_crit": c, "sev_high": h, "sev_med": m, "sev_low": lo}
+            cur.close()
+            return logs, anomalies, stats
         finally:
-            try:
-                if cur is not None:
-                    cur.close()
-            except Exception:
-                pass
-            try:
-                if conn is not None:
-                    conn.close()
-            except Exception:
-                pass
+            conn.close()
+
+    def _refresh_complete(self, future):
+        try:
+            logs, anomalies, stats = future.result()
+        except Exception:
+            self._show_database_error()
+            return
+        self._apply_refresh(logs, anomalies, stats)
+
+    def _apply_refresh(self, logs, anomalies, stats):
+        if self.paused:
+            return
+        self._log_table.populate(logs)
+        self._anom_table.populate(anomalies)
+        self.title = "SISKAMLAN"
+        if stats is not None:
+            self._last_stats = stats
+            self._stats_updated = time.monotonic()
+        self._status_bar.update_stats(self._last_stats, paused=self.paused)
+
+    def _show_database_error(self):
+        self.title = "SISKAMLAN — database disconnected (retrying)"
+        self._status_bar.update("DATABASE DISCONNECTED — displayed data may be stale")
+
+    def on_unmount(self):
+        self._refresh_executor.shutdown(wait=False, cancel_futures=True)
 
     def action_toggle_pause(self):
         self.paused = not self.paused
@@ -227,6 +256,7 @@ class NetworkMonitor(App):
         # One stamp for both the modal preview and the actual write, so the
         # filenames shown are exactly the filenames created.
         log_path, anom_path = plan_export()
+        self._export_rows = (list(self._log_table._rows), list(self._anom_table._rows))
         self._export_stamp = log_path.stem.removeprefix("logs-")
         self.push_screen(
             ExportConfirmScreen(
@@ -243,7 +273,7 @@ class NetworkMonitor(App):
             self.title = "SISKAMLAN — export cancelled"
             return
         result = export_view(
-            self._log_table._rows, self._anom_table._rows,
+            *self._export_rows,
             stamp=self._export_stamp,
         )
         if result:

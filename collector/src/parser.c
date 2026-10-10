@@ -27,6 +27,8 @@ log_entry_t* parse_syslog_line(const char* line) {
 
     // calloc zeroes everything; numeric optionals use UNSET_INT sentinel. 
     entry->vlan_id = UNSET_INT;
+    entry->dst_port = -1;
+    entry->src_port = -1;
     entry->reason = UNSET_INT;
     entry->signal_dbm = UNSET_INT;
     entry->tx_rate_mbps = UNSET_INT;

@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS logs (
     dhcp_mac      VARCHAR(24),
     conntrack_count INTEGER,
     raw_line      TEXT,
-    parsed_at     TIMESTAMPTZ DEFAULT NOW()
+    parsed_at     TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT logs_dst_port_range CHECK (dst_port BETWEEN 0 AND 65535),
+    CONSTRAINT logs_src_port_range CHECK (src_port BETWEEN 0 AND 65535),
+    CONSTRAINT logs_vlan_range CHECK (vlan_id BETWEEN 1 AND 4094),
+    CONSTRAINT logs_conntrack_range CHECK (conntrack_count >= 0)
 );
 
 -- ============================================================
@@ -51,7 +55,9 @@ CREATE TABLE IF NOT EXISTS anomalies (
     features      JSONB,
     severity      VARCHAR(16),
     description   TEXT,
-    created_at    TIMESTAMPTZ DEFAULT NOW()
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT anomalies_severity_valid CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    CONSTRAINT anomalies_window_order CHECK (window_end >= window_start)
 );
 
 -- ============================================================
@@ -69,3 +75,14 @@ CREATE INDEX idx_logs_mac           ON logs (mac);
 
 CREATE INDEX idx_anomalies_timestamp ON anomalies (timestamp);
 CREATE INDEX idx_anomalies_severity  ON anomalies (severity);
+CREATE INDEX idx_logs_timestamp_device ON logs (timestamp, device_type);
+CREATE INDEX idx_anomalies_timestamp_severity ON anomalies (timestamp, severity);
+CREATE INDEX idx_anomalies_features_gin ON anomalies USING GIN (features);
+
+CREATE TABLE IF NOT EXISTS detection_cooldowns (
+    signature       TEXT PRIMARY KEY,
+    anomaly_id      INTEGER NOT NULL REFERENCES anomalies(id) ON DELETE CASCADE,
+    repeat_count    INTEGER NOT NULL DEFAULT 1 CHECK (repeat_count > 0),
+    last_seen       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_detection_cooldowns_last_seen ON detection_cooldowns (last_seen);

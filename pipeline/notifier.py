@@ -15,11 +15,16 @@ import os
 import sys
 import time
 import urllib.request
+import queue
+import threading
 
 SEV_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
 DEFAULT_API_BASE = "https://api.telegram.org"
 TIMEOUT_SECONDS = 5
+_pending = queue.Queue(maxsize=1000)
+_worker = None
+_worker_lock = threading.Lock()
 
 
 def _log(msg):
@@ -31,7 +36,8 @@ def _enabled():
 
 
 def _min_severity():
-    return os.environ.get("NOTIFY_MIN_SEVERITY").strip().upper()
+    value = os.environ.get("NOTIFY_MIN_SEVERITY", "HIGH").strip().upper()
+    return value if value in SEV_RANK else "HIGH"
 
 
 def _send_telegram(text):
@@ -71,6 +77,32 @@ def _send_telegram(text):
     return ok_all
 
 
+def _deliver(text):
+    for attempt in range(4):
+        if _send_telegram(text):
+            return
+        if attempt < 3:
+            time.sleep(2 ** attempt)
+    _log("dropping alert after 4 delivery attempts")
+
+
+def _run_worker():
+    while True:
+        text = _pending.get()
+        try:
+            _deliver(text)
+        finally:
+            _pending.task_done()
+
+
+def _ensure_worker():
+    global _worker
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_run_worker, name="telegram-alerts", daemon=True)
+            _worker.start()
+
+
 def notify(severity, description, anomaly_id, timestamp=None):
     """Send an alert for a fresh anomaly. No-op when disabled/unconfigured."""
     if not _enabled():
@@ -85,4 +117,8 @@ def notify(severity, description, anomaly_id, timestamp=None):
         f"ID: {anomaly_id}\n"
         f"{description}"
     )
-    _send_telegram(text)
+    _ensure_worker()
+    try:
+        _pending.put_nowait(text)
+    except queue.Full:
+        _log("alert queue full — dropping notification")

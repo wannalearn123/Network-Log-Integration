@@ -14,7 +14,7 @@ DEAUTH_RATE = 0.3        # >=9 deauths in 30s, deauth-only (no auth failures mix
 FLOOD_RATE = 8.0         # >=240 events in 30s
 DROP_RATE = 3.3333       # >=100 drops in 30s
 MAC_FLAP_RATE = 0.1      # >=3 flaps of the same MAC in 30s
-STP_RATE = 0.0667        # >=2 STP root changes in 30s
+STP_RATE = 2 / 30        # >=2 STP root changes in 30s
 ROUTE_CHURN_RATE = 0.2   # >=6 route updates in 30s
 
 SENSITIVE_PORTS = {22, 443, 3389, 21, 23}  # SSH, HTTPS, RDP, FTP, Telnet (NOT 80 — DDoS target)
@@ -89,7 +89,7 @@ def detect_rules(rows, window_seconds=30):
                 "entity": ent,
             })
     for ent, count in ip_deauth.items():
-        if ent in ip_fails:
+        if ip_fails.get(ent, 0) / window_seconds >= BRUTE_RATE:
             continue  # already covered by brute-force above
         if count / window_seconds >= DEAUTH_RATE:
             hits.append({
