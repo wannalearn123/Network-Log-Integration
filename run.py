@@ -8,7 +8,8 @@ import signal
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-VENV_PYTHON = sys.executable
+VENV_PYTHON = PROJECT_ROOT / "venv" / "bin" / "python"
+# VENV_PYTHON = sys.executable
 
 orchestrator_proc = None
 tui_proc = None
