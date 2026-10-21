@@ -19,7 +19,7 @@ docker compose up -d --build
 An existing `venv/` also works: activate it or launch with `venv/bin/python`.
 The launcher uses the interpreter running it. Database credentials are read
 from `.env`; the sample host `172.20.0.20` is the PostgreSQL container on Linux.
-PostgreSQL uses the Compose named volume `pgdata`.
+PostgreSQL stores its data in the bind mount `data/pgdata`.
 
 ## Architecture
 
