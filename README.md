@@ -126,7 +126,7 @@ existing behaviour. Changes apply within one second.
 | `/` | filter host, event, IP, MAC, SSID |
 | `↑` `↓` / `j` `k` | scroll the focused pane |
 | `tab` | switch focus between logs and anomalies |
-| `enter` | open the selected row's detail (every parsed column + raw line) |
+| `enter` | open the selected row's detail (populated columns + raw line) |
 | `o` | security overview (top sources, detections by type) |
 | `e` | export the visible rows to CSV |
 | `R` | rules editor |

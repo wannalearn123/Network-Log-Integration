@@ -54,10 +54,14 @@ type exportMsg struct {
 // tickMsg triggers a refresh.
 type tickMsg time.Time
 
+// notifyTTL is how long a transient status message stays on screen.
+const notifyTTL = 5 * time.Second
+
 // Model is the dashboard state.
 type Model struct {
-	store  *store.Store
-	notify string // status line shown under the header
+	store       *store.Store
+	notify      string // status line shown under the header
+	notifyUntil time.Time
 
 	width, height int
 	paused        bool
@@ -122,6 +126,8 @@ func (m *Model) tick() tea.Cmd {
 }
 
 // refresh loads dashboard data without blocking the UI.
+//
+// It is the background poll, so it respects pause.
 func (m *Model) refresh() tea.Cmd {
 	if m.paused {
 		return nil
@@ -148,6 +154,20 @@ func (m *Model) refresh() tea.Cmd {
 			return dataMsg{err: err}
 		}
 		return dataMsg{logs: logs, anomalies: anoms, stats: stats}
+	}
+}
+
+// setNotify shows a status message that clears itself after notifyTTL.
+func (m *Model) setNotify(text string) {
+	m.notify = text
+	m.notifyUntil = time.Now().Add(notifyTTL)
+}
+
+// expireNotify clears a stale status message.
+func (m *Model) expireNotify() {
+	if m.notify != "" && !m.notifyUntil.IsZero() && time.Now().After(m.notifyUntil) {
+		m.notify = ""
+		m.notifyUntil = time.Time{}
 	}
 }
 
@@ -206,6 +226,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		m.expireNotify()
 		return m, tea.Batch(m.refresh(), m.tick())
 
 	case tea.KeyMsg:
@@ -262,9 +283,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "p":
 		m.paused = !m.paused
 		if m.paused {
-			m.notify = "paused"
+			m.setNotify("paused")
 		} else {
 			m.notify = ""
+			m.notifyUntil = time.Time{}
 			return m, m.refresh()
 		}
 	case "/":
@@ -407,7 +429,7 @@ func (m *Model) View() string {
 		return m.parsersEditor.view(m.width, m.height)
 	case viewDetail:
 		if m.detail != nil {
-			return "\n" + m.detail.view(m.width, m.height)
+			return centerBlock(m.detail.view(m.width, m.height), m.width, m.height)
 		}
 	case viewExportConfirm:
 		return m.viewExportConfirm()
@@ -429,7 +451,7 @@ func (m *Model) viewExportConfirm() string {
 	b.WriteString(fmt.Sprintf("  anomalies: %d rows\n", len(m.anomalies)))
 	b.WriteString(fmt.Sprintf("  directory: %s\n", orDash(m.exportDir)))
 	b.WriteString("\n" + styleDim.Render("enter / y confirm · esc cancel"))
-	return modalBox(b.String(), minInt(m.width-6, 72))
+	return centerBlock(modalBox(b.String(), minInt(m.width-6, 72)), m.width, m.height)
 }
 
 func (m *Model) viewOverview() string {
@@ -440,7 +462,7 @@ func (m *Model) viewOverview() string {
 		body = styleDim.Render("loading…")
 	}
 	box := modalBox(header+"\n\n"+body, m.width)
-	return "\n" + box
+	return centerBlock(box, m.width, m.height)
 }
 
 // renderOverview formats the overview panels.
@@ -936,5 +958,5 @@ func (m *Model) viewHelp() string {
 		"",
 		styleDim.Render("Press b or ? to return to the dashboard."),
 	}
-	return "\n" + modalBox(strings.Join(lines, "\n"), m.width)
+	return centerBlock(modalBox(strings.Join(lines, "\n"), m.width), m.width, m.height)
 }

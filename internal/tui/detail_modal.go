@@ -23,84 +23,99 @@ type detailModal struct {
 }
 
 // newLogDetail builds the modal for a parsed log row.
+//
+// Only populated fields are listed. The original Textual modal worked this way
+// and it matters: a firewall row has a dozen relevant columns, and padding the
+// card with thirty dashes buries them.
 func newLogDetail(r *store.LogEntry) *detailModal {
 	str := func(p *string) string {
-		if p == nil || *p == "" {
-			return "—"
+		if p == nil {
+			return ""
 		}
 		return *p
 	}
 	num := func(p *int) string {
 		if p == nil {
-			return "—"
+			return ""
 		}
 		return strconv.Itoa(*p)
 	}
-	s := func(v string) string {
-		if v == "" {
-			return "—"
+
+	rows := [][2]string{{"timestamp", r.Timestamp.Format("2006-01-02T15:04:05Z07:00")}}
+	add := func(label, value string) {
+		if value == "" {
+			return
 		}
-		return v
+		rows = append(rows, [2]string{label, value})
 	}
 
+	add("hostname", r.Hostname)
+	add("facility", r.Facility)
+	add("severity", r.Severity)
+	add("device_type", r.DeviceType)
+	add("event", r.Event)
+	add("src_ip", str(r.SrcIP))
+	add("dst_ip", str(r.DstIP))
+	add("proto", r.Proto)
+	add("dst_port", num(r.DstPort))
+	add("src_port", num(r.SrcPort))
+	add("action", r.Action)
+	add("mac", r.MAC)
+	add("vlan_id", num(r.VLANID))
+	add("ifname", r.IfName)
+	add("peer_ifname", r.PeerIfName)
+	add("stp_root", r.STPRoot)
+	add("client_mac", r.ClientMAC)
+	add("ssid", r.SSID)
+	add("radio", r.Radio)
+	add("reason", num(r.Reason))
+	add("signal_dbm", num(r.SignalDBM))
+	add("tx_rate_mbps", num(r.TxRateMbps))
+	add("eap_status", r.EAPStatus)
+	add("ospf_nbr", str(r.OSPFNbr))
+	add("gateway", str(r.Gateway))
+	add("route_dst", r.RouteDst)
+	add("dhcp_mac", r.DHCPMAC)
+	add("conntrack_count", num(r.ConntrackCt))
+
 	return &detailModal{
-		title:    fmt.Sprintf("LOG %s · %s", r.Timestamp.Format("2006-01-02 15:04:05"), s(r.Hostname)),
+		title:    fmt.Sprintf("LOG %s · %s", r.Timestamp.Format("2006-01-02 15:04:05"), orDash(r.Hostname)),
 		rawLabel: "raw_line",
 		raw:      r.RawLine,
-		rows: [][2]string{
-			{"timestamp", r.Timestamp.Format("2006-01-02T15:04:05Z07:00")},
-			{"hostname", s(r.Hostname)},
-			{"facility", s(r.Facility)},
-			{"severity", s(r.Severity)},
-			{"device_type", s(r.DeviceType)},
-			{"event", s(r.Event)},
-			{"src_ip", str(r.SrcIP)},
-			{"dst_ip", str(r.DstIP)},
-			{"proto", s(r.Proto)},
-			{"dst_port", num(r.DstPort)},
-			{"src_port", num(r.SrcPort)},
-			{"action", s(r.Action)},
-			{"mac", s(r.MAC)},
-			{"vlan_id", num(r.VLANID)},
-			{"ifname", s(r.IfName)},
-			{"peer_ifname", s(r.PeerIfName)},
-			{"stp_root", s(r.STPRoot)},
-			{"client_mac", s(r.ClientMAC)},
-			{"ssid", s(r.SSID)},
-			{"radio", s(r.Radio)},
-			{"reason", num(r.Reason)},
-			{"signal_dbm", num(r.SignalDBM)},
-			{"tx_rate_mbps", num(r.TxRateMbps)},
-			{"eap_status", s(r.EAPStatus)},
-			{"ospf_nbr", str(r.OSPFNbr)},
-			{"gateway", str(r.Gateway)},
-			{"route_dst", s(r.RouteDst)},
-			{"dhcp_mac", s(r.DHCPMAC)},
-			{"conntrack_count", num(r.ConntrackCt)},
-		},
+		rows:     rows,
 	}
 }
 
 // newAnomalyDetail builds the modal for a detection.
 func newAnomalyDetail(a store.AnomalyRow) *detailModal {
-	score := "—"
-	if a.Score != nil {
-		score = strconv.FormatFloat(*a.Score, 'f', 1, 64)
+	rows := [][2]string{
+		{"id", strconv.Itoa(a.ID)},
+		{"timestamp", a.Timestamp.Format("2006-01-02T15:04:05Z07:00")},
+		{"severity", a.Severity},
 	}
+	add := func(label, value string) {
+		if value == "" {
+			return
+		}
+		rows = append(rows, [2]string{label, value})
+	}
+	if a.Score != nil {
+		add("anomaly_score", strconv.FormatFloat(*a.Score, 'f', 1, 64))
+	}
+	add("repeat_count", strconv.Itoa(a.RepeatCount))
+	if !a.WindowStart.IsZero() {
+		add("window_start", a.WindowStart.Format("15:04:05"))
+	}
+	if !a.WindowEnd.IsZero() {
+		add("window_end", a.WindowEnd.Format("15:04:05"))
+	}
+	add("description", a.Description)
+
 	return &detailModal{
 		title:    fmt.Sprintf("ANOMALY #%d · %s", a.ID, a.Severity),
 		rawLabel: "features (jsonb)",
 		raw:      a.Features,
-		rows: [][2]string{
-			{"id", strconv.Itoa(a.ID)},
-			{"timestamp", a.Timestamp.Format("2006-01-02T15:04:05Z07:00")},
-			{"severity", a.Severity},
-			{"anomaly_score", score},
-			{"repeat_count", strconv.Itoa(a.RepeatCount)},
-			{"window_start", a.WindowStart.Format("15:04:05")},
-			{"window_end", a.WindowEnd.Format("15:04:05")},
-			{"description", a.Description},
-		},
+		rows:     rows,
 	}
 }
 

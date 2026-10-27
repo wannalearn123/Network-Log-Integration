@@ -300,3 +300,32 @@ func modalBox(body string, width int) string {
 	}
 	return stylePanelActive.Width(width-4).Padding(1, 2).Render(body)
 }
+
+// centerBlock places a rendered box in the middle of the terminal.
+//
+// The original Textual modals used `align: center middle`. When the box is
+// taller than the terminal it is left top-aligned so the first lines stay
+// visible instead of being pushed off screen.
+func centerBlock(box string, width, height int) string {
+	lines := strings.Split(box, "\n")
+	if height <= 0 || len(lines) >= height {
+		return box
+	}
+	top := (height - len(lines)) / 2
+
+	var b strings.Builder
+	for i := 0; i < top; i++ {
+		b.WriteByte('\n')
+	}
+	for i, line := range lines {
+		pad := (width - lipgloss.Width(line)) / 2
+		if pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteString(line)
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
