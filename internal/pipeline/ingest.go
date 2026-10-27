@@ -23,6 +23,8 @@ const (
 // Ingester consumes parsed lines and writes them to PostgreSQL in batches.
 type Ingester struct {
 	Store *store.Store
+	// Parsers, if set, supplies the hot-reloadable parser.
+	Parsers *ParserProvider
 	// OnBatch, if set, is called after each successful write.
 	OnBatch func(inserted, total, dropped int)
 
@@ -47,6 +49,10 @@ func (i *Ingester) Run(ctx context.Context, in <-chan string) error {
 			}
 			i.add(line)
 		case <-ticker.C:
+			// Pick up parser config edits without restarting the process.
+			if i.Parsers != nil {
+				i.Parsers.Reload()
+			}
 			if err := i.flush(ctx); err != nil {
 				return err
 			}
@@ -60,7 +66,12 @@ func (i *Ingester) add(line string) {
 		i.dropped++
 		return
 	}
-	e := parser.Parse(line)
+	var e *parser.Entry
+	if i.Parsers != nil {
+		e = i.Parsers.Parse(line)
+	} else {
+		e = parser.Parse(line)
+	}
 	if e == nil {
 		return
 	}

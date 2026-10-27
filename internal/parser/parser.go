@@ -7,6 +7,7 @@
 package parser
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
@@ -48,7 +49,8 @@ type Entry struct {
 	RawLine string `json:"raw_line"`
 }
 
-// Parse extracts a structured entry from one raw syslog line.
+// Parse extracts a structured entry from one raw syslog line using the
+// built-in rules.
 func Parse(line string) *Entry {
 	if line == "" {
 		return nil
@@ -67,6 +69,35 @@ func Parse(line string) *Entry {
 
 	detectDeviceType(e)
 	extractFields(e, line)
+	return e
+}
+
+// Parser applies an optional user configuration on top of the built-in rules.
+// A nil configuration behaves exactly like the package-level Parse.
+type Parser struct {
+	cfg *Config
+}
+
+// NewParser compiles a configuration into a parser.
+func NewParser(cfg *Config) (*Parser, error) {
+	if cfg == nil {
+		return &Parser{}, nil
+	}
+	compiled := *cfg
+	if err := compiled.compile(); err != nil {
+		return nil, fmt.Errorf("parser: compile config: %w", err)
+	}
+	return &Parser{cfg: &compiled}, nil
+}
+
+// Parse runs the built-in rules, then overlays the configured device profile
+// when the hostname matches.
+func (p *Parser) Parse(line string) *Entry {
+	e := Parse(line)
+	if e == nil || p == nil || p.cfg == nil {
+		return e
+	}
+	p.cfg.applyConfig(e, e.RawLine, asciiLower(e.RawLine))
 	return e
 }
 

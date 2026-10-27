@@ -18,6 +18,7 @@ import (
 type Config struct {
 	Store     *store.Store
 	Rules     *config.File[rules.RulesFile]
+	Parsers   *ParserProvider
 	SyslogDir string
 	StateFile string
 	Notifier  *notify.Notifier
@@ -48,6 +49,7 @@ func New(cfg Config) *Supervisor {
 		lines: make(chan string, buf),
 		ingester: &Ingester{
 			Store:   cfg.Store,
+			Parsers: cfg.Parsers,
 			OnBatch: cfg.OnIngest,
 		},
 		detector: &Detector{

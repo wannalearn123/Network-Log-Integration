@@ -13,6 +13,7 @@ import (
 
 	"siskamlan/internal/config"
 	"siskamlan/internal/notify"
+	"siskamlan/internal/parser"
 	"siskamlan/internal/pipeline"
 	"siskamlan/internal/rules"
 	"siskamlan/internal/store"
@@ -79,44 +80,80 @@ func main() {
 	}
 }
 
-// build assembles the shared runtime: store, rules config and supervisor.
-func build(ctx context.Context) (*store.Store, *pipeline.Supervisor, error) {
+// buildRuntime assembles the shared runtime: store, rules, parser config and
+// supervisor.
+func buildRuntime(ctx context.Context) (*runtime, error) {
 	paths := config.DefaultPaths(projectRoot)
 
 	rulesFile := config.NewFile[rules.RulesFile](paths.Rules)
 	rulesFile.Decode = rules.Decode
 	rulesFile.Validate = rules.Validate
 	if err := config.LoadOrSeed(rulesFile, rules.DefaultRulesFile(), rules.Encode); err != nil {
-		return nil, nil, fmt.Errorf("rules config: %w", err)
+		return nil, fmt.Errorf("rules config: %w", err)
 	}
 	if rf, _ := rulesFile.Current(); len(rf.Rules) > 0 {
 		log.Printf("rules: %d loaded from %s", len(rf.Rules), paths.Rules)
 	}
 
+	parsersFile := config.NewFile[parser.Config](paths.Parsers)
+	parsersFile.Decode = parser.DecodeConfig
+	parsersFile.Validate = parser.ValidateConfig
+	// Seed with the commented template verbatim, not the re-encoded form.
+	if err := seedIfMissing(paths.Parsers, []byte(parser.TemplateYAML)); err != nil {
+		return nil, fmt.Errorf("parser config: %w", err)
+	}
+	if err := parsersFile.Load(); err != nil {
+		return nil, fmt.Errorf("parser config: %w", err)
+	}
+	if pc, _ := parsersFile.Current(); true {
+		log.Printf("parsers: %d device profiles from %s", len(pc.Devices), paths.Parsers)
+	}
+	provider := pipeline.NewParserProvider(parsersFile)
+
 	s, err := store.OpenWithRetry(ctx, store.OptionsFromEnv(), 10)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	sup := pipeline.New(pipeline.Config{
 		Store:     s,
 		Rules:     rulesFile,
+		Parsers:   provider,
 		SyslogDir: filepath.Join(projectRoot, "data", "syslog"),
 		StateFile: filepath.Join(projectRoot, "data", ".pipeline", "offsets.json"),
 		Notifier:  notify.New(),
 	})
-	return s, sup, nil
+	return &runtime{store: s, supervisor: sup}, nil
+}
+
+// runtime bundles the long-lived components built for a run.
+type runtime struct {
+	store      *store.Store
+	supervisor *pipeline.Supervisor
+
+	stopTUI context.CancelFunc
+}
+
+// seedIfMissing writes template when path does not exist yet, preserving the
+// human-readable comments a YAML encoder would drop.
+func seedIfMissing(path string, template []byte) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return config.WriteAtomic(path, template)
 }
 
 func runPipeline(ctx context.Context) error {
-	s, sup, err := build(ctx)
+	rt, err := buildRuntime(ctx)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer rt.store.Close()
 
 	log.Printf("pipeline starting — tailing %s", filepath.Join(projectRoot, "data", "syslog"))
-	return sup.Run(ctx)
+	return rt.supervisor.Run(ctx)
 }
 
 func runTUI(ctx context.Context) error {
