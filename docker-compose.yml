@@ -1,25 +1,117 @@
-networks:
-  building-lan:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
+name: siskamlan-lab
 
 services:
+  firewall:
+    image: alpine:3.22
+    container_name: lab-firewall
+    cap_add: [NET_ADMIN, SYSLOG]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    command: >
+      sh -c "apk add --no-cache iptables >/dev/null 2>&1;
+             touch /var/log/messages;
+             ip route replace default via 203.0.113.254;
+             ip route replace 192.168.10.0/24 via 10.0.0.1;
+             ip route replace 192.168.20.0/24 via 10.0.0.1;
+             syslogd -R 192.168.20.10:514 -O /var/log/messages;
+             klogd -n >/dev/null 2>&1 &
+             iptables -A OUTPUT -p udp -d 192.168.20.10 --dport 514 -j ACCEPT;
+             iptables -A FORWARD -m limit --limit 10/min -j LOG --log-prefix 'FW-FORWARD: ';
+             iptables -A INPUT  -m limit --limit 10/min -j LOG --log-prefix 'FW-INPUT: ';
+             iptables -A OUTPUT -m limit --limit 10/min -j LOG --log-prefix 'FW-OUTPUT: ';
+             echo 'firewall up'; tail -f /var/log/messages"
+    networks:
+      wan:            { ipv4_address: 203.0.113.1 }
+      net-fw-router:  { ipv4_address: 10.0.0.2 }
+      net-mgmt:       { ipv4_address: 10.99.0.21 }
+
+  router:
+    image: mikrotik/chr:latest
+    container_name: lab-router
+    cap_add: [NET_ADMIN]
+    devices: [/dev/net/tun:/dev/net/tun]
+    stdin_open: true
+    tty: true
+    stop_grace_period: 30s
+    volumes:
+      - ./docker/router/config.rsc:/rw/config.rsc
+      - ./data/router:/rw
+    networks:
+      net-fw-router:              { ipv4_address: 10.0.0.1, interface_name: fw0 }
+      net-router-switch-vlan10:   { ipv4_address: 10.0.1.1, interface_name: lan0 }
+      net-router-switch-vlan20:   { ipv4_address: 10.0.2.1, interface_name: srv0 }
+      net-mgmt:                   { ipv4_address: 10.99.0.1, interface_name: mgmt0 }
+
+  switch:
+    image: tkdebnath/cisco_iol:L2-17.12.01
+    container_name: lab-switch
+    privileged: true
+    stdin_open: true
+    tty: true
+    stop_grace_period: 30s
+    volumes:
+      - ./docker/iol/startup-config:/iol/config.txt:ro
+    networks:
+      net-router-switch-vlan10:   { ipv4_address: 10.0.1.2, interface_name: eth0 }
+      net-switch-pc1:             { ipv4_address: 10.0.3.1, interface_name: eth1 }
+      net-switch-pc2:             { ipv4_address: 10.0.4.1, interface_name: eth2 }
+      net-router-switch-vlan20:   { ipv4_address: 10.0.2.2, interface_name: eth3 }
+      net-switch-syslog:          { ipv4_address: 10.0.5.1, interface_name: eth4 }
+      net-switch-postgres:        { ipv4_address: 10.0.6.1, interface_name: eth5 }
+      net-mgmt:                   { ipv4_address: 10.99.0.22, interface_name: eth6 }
+
+  pc1:
+    image: alpine:3.22
+    container_name: lab-pc1
+    cap_add: [NET_ADMIN]
+    command: >
+      sh -c "ip addr del 10.0.3.2/29 dev eth0 2>/dev/null || true;
+             ip addr add 192.168.10.50/24 dev eth0;
+             ip route replace default via 192.168.10.1;
+             echo 'pc1 up'; sleep infinity"
+    networks:
+      net-switch-pc1: { ipv4_address: 10.0.3.2 }
+
+  pc2:
+    image: alpine:3.22
+    container_name: lab-pc2
+    cap_add: [NET_ADMIN]
+    command: >
+      sh -c "ip addr del 10.0.4.2/29 dev eth0 2>/dev/null || true;
+             ip addr add 192.168.10.51/24 dev eth0;
+             ip route replace default via 192.168.10.1;
+             echo 'pc2 up'; sleep infinity"
+    networks:
+      net-switch-pc2: { ipv4_address: 10.0.4.2 }
+
+  outside-host:
+    image: alpine:3.22
+    container_name: lab-outside
+    cap_add: [NET_ADMIN]
+    command: sh -c "ip route replace default via 203.0.113.1; echo 'outside-host up'; sleep infinity"
+    networks:
+      wan: { ipv4_address: 203.0.113.100 }
+
   syslog:
     build: docker/syslog
     container_name: syslog
     hostname: syslog
+    cap_add: [NET_ADMIN]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "ip addr del 10.0.5.2/29 dev eth0 2>/dev/null || true;
+         ip addr add 192.168.20.10/24 dev eth0;
+         ip route replace default via 192.168.20.1;
+         exec rsyslogd -n -f /etc/rsyslog.conf"
     networks:
-      building-lan:
-        ipv4_address: 172.20.0.10
+      net-switch-syslog: { ipv4_address: 10.0.5.2 }
     ports:
       - "5140:514/tcp"
       - "5140:514/udp"
     volumes:
       - ./data/syslog:/var/log/remote
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "514"]
+      test: ["CMD-SHELL", "pgrep -f 'syslogd|rsyslogd|syslog-ng' >/dev/null || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -29,18 +121,20 @@ services:
     image: postgres:latest
     container_name: postgres
     hostname: postgres
-    networks:
-      building-lan:
-        ipv4_address: 172.20.0.20    
-    env_file:
-      ./.env
+    cap_add: [NET_ADMIN]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "exec docker-entrypoint.sh postgres"
     environment:
-      POSTGRES_USER: ${PGUSER}
-      POSTGRES_PASSWORD: ${PGPASSWORD}
-      POSTGRES_DB: ${PGDATABASE}
+      POSTGRES_USER: labuser
+      POSTGRES_PASSWORD: labpass
+      POSTGRES_DB: labdb
+      PGDATA: /var/lib/postgresql/data
+    networks:
+      net-switch-postgres: { ipv4_address: 10.0.6.2 }
     volumes:
-      - ./data/pgdata:/var/lib/postgresql
-      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./data/pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
@@ -48,52 +142,57 @@ services:
       retries: 5
     restart: unless-stopped
 
-  router:
-    build: docker/router
-    container_name: router
-    hostname: router
-    networks:
-      building-lan:
-        ipv4_address: 172.20.0.11
-    depends_on:
-      syslog:
-        condition: service_healthy
-    restart: unless-stopped
+networks:
+  wan:
+    name: lab-wan
+    driver: bridge
+    ipam:
+      config: [{ subnet: 203.0.113.0/24, gateway: 203.0.113.254 }]
 
-  switch:
-    build: docker/switch
-    container_name: switch
-    hostname: switch
-    networks:
-      building-lan:
-        ipv4_address: 172.20.0.2
-    depends_on:
-      syslog:
-        condition: service_healthy
-    restart: unless-stopped
+  net-fw-router:
+    name: lab-fw-router
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.0.0/29, gateway: 10.0.0.6 }]
 
-  ap:
-    build: docker/ap
-    container_name: ap
-    hostname: ap
-    networks:
-      building-lan:
-        ipv4_address: 172.20.0.3
-    depends_on:
-      syslog:
-        condition: service_healthy
-    restart: unless-stopped
+  net-router-switch-vlan10:
+    name: lab-router-switch-vlan10
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.1.0/29, gateway: 10.0.1.6 }]
 
-  firewall:
-    build: docker/firewall
-    container_name: firewall
-    hostname: firewall
-    networks:
-      building-lan:
-        ipv4_address: 172.20.0.4
-    depends_on:
-      syslog:
-        condition: service_healthy
-    restart: unless-stopped
+  net-router-switch-vlan20:
+    name: lab-router-switch-vlan20
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.2.0/29, gateway: 10.0.2.6 }]
 
+  net-switch-pc1:
+    name: lab-switch-pc1
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.3.0/29, gateway: 10.0.3.6 }]
 
+  net-switch-pc2:
+    name: lab-switch-pc2
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.4.0/29, gateway: 10.0.4.6 }]
+
+  net-switch-syslog:
+    name: lab-switch-syslog
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.5.0/29, gateway: 10.0.5.6 }]
+
+  net-switch-postgres:
+    name: lab-switch-postgres
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.0.6.0/29, gateway: 10.0.6.6 }]
+
+  net-mgmt:
+    name: lab-mgmt
+    driver: bridge
+    ipam:
+      config: [{ subnet: 10.99.0.0/24, gateway: 10.99.0.254 }]
