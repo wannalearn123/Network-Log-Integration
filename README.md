@@ -1,46 +1,43 @@
 # SISKAMLAN — LAN Security Monitoring
 
-Rules-based syslog monitoring with a C parser, PostgreSQL storage, Textual
-dashboard, Docker device simulators, and optional Telegram alerts.
+Rules-based syslog monitoring: a Go parser, PostgreSQL storage, a Bubble Tea
+terminal dashboard, Docker device simulators, and optional Telegram alerts.
 
 ## Setup
 
-Requires Linux, Python 3.12+, GCC/make and Docker Compose v2.
+Requires Linux, Go 1.24+ and Docker Compose v2.
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r pipeline/requirements.txt
 cp .env.example .env
-make -C collector
+make build                 # produces ./siskamlan
 docker compose up -d --build
-.venv/bin/python run.py
+./siskamlan                # pipeline + dashboard in one process
 ```
 
-An existing `venv/` also works: activate it or launch with `venv/bin/python`.
-The launcher uses the interpreter running it. Database credentials are read
-from `.env`; the sample host `172.20.0.20` is the PostgreSQL container on Linux.
-PostgreSQL stores its data in the bind mount `data/pgdata`.
+Database credentials are read from `.env`; the sample host `172.20.0.20` is the
+PostgreSQL container on Linux. PostgreSQL stores its data in `data/pgdata`.
 
 ## Architecture
 
 ```text
 device simulators → rsyslog → data/syslog/*.log
-  → Python file tailer → C collector → JSON → ingest → PostgreSQL
-  → rules detector → anomalies → TUI / optional Telegram
+  → tailer → parser → ingest → PostgreSQL
+  → rules engine → anomalies → TUI / optional Telegram
 ```
 
-The tailer discovers new files and handles rotation/truncation. Existing files
-start at EOF; ingestion is live-only, with no durable replay/checkpoint guarantee.
-The detector checks a 30-second window every 15 seconds. Rules cover port scans,
-authentication failures, deauth storms, log floods, firewall drops, MAC flaps,
-STP instability and route churn. Cooldowns merge repeats per type/entity and
-reset on process restart. Rules have no probabilistic score.
+One binary runs everything: the tailer, ingester and detector run as
+goroutines while the dashboard owns the terminal. The tailer discovers new
+files and handles rotation/truncation. Existing files start at EOF; ingestion
+is live-only, with offsets persisted atomically so restarts resume mid-file.
 
-ML experiments were dropped from the supported tree because their training
-features did not match the live syslog feature contract. See `train/README.md`
-for the requirements before reintroducing a validated model.
+The detector checks a 30-second window every 15 seconds. Rules cover port
+scans, authentication failures, deauth storms, log floods, firewall drops, MAC
+flaps, STP instability and route churn. Cooldowns merge repeats per type/entity
+and reset on process restart. Rules have no probabilistic score.
 
 ## Configuration
+
+### `.env`
 
 See `.env.example`. Key settings:
 
@@ -56,48 +53,106 @@ See `.env.example`. Key settings:
 | NOTIFY_TELEGRAM | off | Enable fresh-anomaly alerts |
 | NOTIFY_MIN_SEVERITY | HIGH | Minimum alert severity |
 
-Retention deletes old records hourly while the detector runs. Configure it before
-starting against an existing database. Telegram requires `TELEGRAM_BOT_TOKEN`
-and comma-separated `TELEGRAM_CHAT_ID`. Repeated merged anomalies do not re-alert.
+Retention deletes old records hourly while the detector runs. Telegram requires
+`TELEGRAM_BOT_TOKEN` and comma-separated `TELEGRAM_CHAT_ID`. Repeated merged
+anomalies do not re-alert.
+
+### `config/rules.yaml`
+
+Detection rules are data, not code. Each rule filters rows over a window,
+groups them, and compares a count rate against a threshold. Edit the file
+directly or use the dashboard's rules editor; changes apply within 15 seconds
+with no restart.
+
+```yaml
+version: 1
+window_seconds: 30
+rules:
+  - name: PORT_SCAN
+    severity: HIGH
+    rate: 0.4                  # events per second (>=12 in 30s)
+    group_by: [src_ip]
+    count: distinct
+    distinct_on: dst_port
+    when:
+      all:
+        - {field: src_ip, op: exists}
+        - {field: dst_port, op: exists}
+    description: "Port scan from {entity} — {count} ports in {window}s"
+```
+
+Conditions nest with `all` / `any` / `not`. Operators: `eq`, `ne`, `contains`,
+`icontains`, `contains_any`, `prefix`, `suffix`, `regex`, `in`, `not_in`,
+`exists`, `not_exists`, `gt`, `gte`, `lt`, `lte`. `$identity` (AP→client MAC,
+switch→MAC, else source IP) and `$mac` are synthetic group fields. An invalid
+edit is rejected and the previous rules keep running.
+
+### `config/parsers.yaml`
+
+New log types are supported without rebuilding. A device profile matches by
+hostname and maps keywords onto structured columns.
+
+```yaml
+version: 1
+devices:
+  - name: fortigate
+    hostname_match: ['^firewall', '^lab-firewall']
+    device_type: firewall
+    fields:
+      - {target: src_ip,   strategy: kv, key: src}
+      - {target: dst_port, strategy: kv, key: dpt, type: int}
+      - {target: action,   strategy: word_map, source: action,
+         map: {accept: allow, drop: deny}}
+    events:
+      - {event: fw_block, contains: ['act=deny', 'act=drop']}
+```
+
+Strategies: `kv`, `regex`, `word_map`, `positional`. Hosts that match no
+profile keep using the built-in parser, so adding a profile never changes
+existing behaviour. Changes apply within one second.
 
 ## Dashboard
 
-`q`: quit · `p`: pause · `/`: search · `Esc`: dismiss · `Tab`: focus next panel ·
-`Enter`: details · `Space`: overview · `e`: export visible rows · `i`: about.
+```text
+./siskamlan          # pipeline + dashboard
+./siskamlan run      # pipeline only (headless)
+./siskamlan tui      # dashboard only
+```
 
-Log/anomaly views refresh every second; totals refresh every 15 seconds.
-CSV confirmation captures a snapshot of the current view.
+| Key | Action |
+|---|---|
+| `q` | quit |
+| `p` | pause / resume live refresh |
+| `/` | filter host, event, IP, MAC, SSID |
+| `↑` `↓` / `j` `k` | scroll the focused pane |
+| `tab` | switch focus between logs and anomalies |
+| `R` | rules editor |
+| `P` | parser editor |
+| `?` | help |
+
+The rules editor supports add, edit, toggle, delete and **preview**: pressing
+`p` dry-runs the rule against the last five minutes and reports how often it
+would have fired. The parser editor's `i` key samples recent raw lines, lists
+the `key=value` tokens it finds with a suggested target column, and builds the
+assignment for you.
 
 ## Verification
 
 ```bash
-make -C collector test
-make -C collector asan
-.venv/bin/python -m unittest discover -s tests -v
-docker compose config --quiet
+make build
+make test      # Go unit + integration tests
+make vet
 ```
 
-Run pipeline alone with `python pipeline/orchestrator.py`, or dashboard alone
-with `python tui/app.py`. Startup retries PostgreSQL for a bounded period;
-subsequent DB connection failure stops the pipeline and is surfaced by the launcher.
+Go must not be invoked as `go build ./...` at the repository root: the
+recursive pattern walks `data/pgdata`, which the PostgreSQL container owns with
+mode 0700. The Makefile targets scope to `./cmd/...` and `./internal/...`.
 
-For an existing database, apply the idempotent constraint migration:
-
-```bash
-docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < db/migrations/001_constraints.sql
-```
-
-This preserves historical rows and checks new writes. Fresh volumes get these
-constraints automatically. No volume reset is needed.
-
-## Follow-up plan
-
-1. Persist file offsets and anomaly cooldowns for restart-safe processing.
-2. Move database queries into a dashboard worker and update tables by stable IDs.
-3. Queue Telegram alerts independently of detection; add delivery retry metrics.
-4. Add retention partitioning and measured query/index tuning if volume warrants it.
-5. Validate parser behavior on deployment-specific syslog formats and add fuzzing.
-6. Promote ML only after the evaluation and feature-contract work in `train/README.md`.
+PostgreSQL integration tests skip automatically when the database is
+unreachable. Two oracle fixtures pin behaviour to the original implementation:
+`internal/parser/testdata/golden.jsonl` (5,180 sample lines parsed identically
+by the former C collector) and `internal/rules/testdata/python_hits.txt`
+(detections produced by the former Python engine).
 
 ## Limitations
 
@@ -107,13 +162,14 @@ constraints automatically. No volume reset is needed.
   persisted atomically, but records already buffered at an unclean kill may repeat.
 - Timestamp inference for traditional syslog assumes current year and UTC.
 - IPv6 and full RFC 5424 parsing are not supported.
-- Dashboard DB calls run in a background worker; slow queries can still delay updates.
 - Telegram delivery is queued with bounded retries and may drop alerts when full.
 - Database schema is initialized only for a fresh volume; future schema changes
   require explicit migrations rather than recreating the volume.
 
 ## Layout
 
-`collector/`: C parser/tests · `pipeline/`: ingestion/detection/alerts ·
-`db/`: database helpers · `tui/`: dashboard · `docker/`: images/schema ·
-`docker-compose.yml`: services · `train/`: ML decision record · `tests/`: Python regressions.
+`cmd/siskamlan/`: entrypoint · `internal/parser/`: syslog parsing + config ·
+`internal/rules/`: detection engine · `internal/pipeline/`: tailer, ingest,
+detector, alerts · `internal/store/`: PostgreSQL · `internal/tui/`: dashboard ·
+`config/`: editable rules and parser definitions · `docker/`: images/schema ·
+`data/syslog/`: collected logs.

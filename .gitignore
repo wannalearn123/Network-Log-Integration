@@ -1,34 +1,21 @@
 # Secrets — .env holds PG creds, never commit
 .env
 
-# Python — venv, bytecode, tooling
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-*.egg-info/
+# Go build artifacts
+/siskamlan
+*.test
 
-# Runtime data — syslog feeds, postgres volume, launcher logs
+# Runtime data — syslog feeds, postgres volume, pipeline logs
 data/
 logs/
 .pipeline/
 *.log
 
-# C build artifacts — rebuilt via collector/Makefile
-collector/log_collector
-collector/test_parser
-collector/test_parser_asan
-collector/src/*.o
-test_parser
-
-# Trained model — 800KB+ binary, reproducible via train/train_model.py
-pipeline/models/*.pkl
-pipeline/models/*.pkl.*
-
-# Offline training artifact — 97MB bundle from train/train.py, copied into
-# pipeline/models/ (above) for the live detector
-train/*.pkl
+# Local virtualenv kept for the archived train/ decision record
+.venv/
+venv/
+__pycache__/
+*.py[cod]
 
 # Training data — large downloadable archives, never commit
 *.zip

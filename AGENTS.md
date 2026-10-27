@@ -2,16 +2,22 @@
 
 See README.md for setup, architecture, configuration and runtime limitations.
 
-- Python 3.12+; use `.venv/bin/python` or an existing `venv/bin/python`.
-- Build collector with `make -C collector` before running the pipeline.
+- Go 1.24+; build with `make build`, run with `./siskamlan`.
+- Python 3.12+ is only needed for the archived `train/` decision record.
 - Compose configuration is at repository root: `docker compose up -d`.
-- `.env` is loaded by `db/init.py`. Never commit credentials/runtime data.
+- `.env` is loaded at startup. Never commit credentials/runtime data.
 - Runtime detection is rules-only. ML experiments under `train/` are archived.
-- C verification: `make -C collector test`.
-- Python verification: `python -m unittest discover -s tests -v`.
+- Go verification: `make test` and `make vet`.
 - Compose verification: `docker compose config --quiet`.
 - Preserve existing named database volumes and user data during changes.
 - Retention defaults to 7 days for logs / 30 for anomalies; 0 disables it.
 - Detector windows are 30 seconds with a 15-second cadence.
+- Rules live in `config/rules.yaml`; parser profiles in `config/parsers.yaml`.
+  Both hot-reload and are editable from the dashboard (`R` and `P`).
+- An invalid config edit is rejected and the last good config keeps running.
 - Use structured anomaly `features.type` / `features.entity` for analytics,
   not regex parsing of human descriptions.
+- Behaviour is pinned by two fixtures: `internal/parser/testdata/golden.jsonl`
+  (parity with the former C parser) and `internal/rules/testdata/python_hits.txt`
+  (parity with the former Python detector). Update them only with a deliberate
+  behaviour change.

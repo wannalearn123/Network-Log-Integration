@@ -1,3 +1,0 @@
-psycopg2-binary>=2.9.0
-python-dotenv>=1.0.0
-textual>=0.80.0,<9
