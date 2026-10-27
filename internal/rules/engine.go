@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -139,12 +140,17 @@ func render(rule Rule, entity string, count, window int) string {
 	return r.Replace(desc)
 }
 
+// srcIPFor sets src_ip when the entity is an address (IPv4 or IPv6), so the
+// dashboard can group by source regardless of address family.
 func srcIPFor(entity string) *string {
-	if ipv4Re.MatchString(entity) {
-		e := entity
-		return &e
+	if entity == "" {
+		return nil
 	}
-	return nil
+	if _, err := netip.ParseAddr(entity); err != nil {
+		return nil
+	}
+	e := entity
+	return &e
 }
 
 // applySuppression drops hits whose (rule, entity) is covered by another rule.

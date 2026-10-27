@@ -199,6 +199,7 @@ func (r *runtime) runDashboard(ctx context.Context, withPipeline bool) error {
 		Store:       r.store,
 		RulesPath:   r.paths.Rules,
 		ParsersPath: r.paths.Parsers,
+		ExportDir:   filepath.Join(projectRoot, "exports"),
 	})
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {

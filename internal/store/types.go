@@ -5,6 +5,8 @@ package store
 
 import (
 	"time"
+
+	"siskamlan/internal/parser"
 )
 
 // LogEntry is one parsed syslog row, mirroring the `logs` table.
@@ -73,6 +75,10 @@ var LogColumns = []string{
 }
 
 // values returns the entry in LogColumns order for pgx parameter binding.
+//
+// Network columns are validated here: PostgreSQL rejects the whole statement on
+// a single malformed inet, so an unparseable address is written as NULL instead
+// of poisoning its batch. The raw text stays available in raw_line.
 func (e *LogEntry) values() []any {
 	str := func(s string) any {
 		if s == "" {
@@ -80,12 +86,17 @@ func (e *LogEntry) values() []any {
 		}
 		return s
 	}
+	inet := func(p *string) any {
+		if p == nil || !parser.ValidIP(*p) {
+			return nil
+		}
+		return *p
+	}
 	ptrInt := func(p *int) any { return p }
-	ptrStr := func(p *string) any { return p }
 
 	return []any{
 		e.Timestamp, str(e.Hostname), str(e.Facility), str(e.Severity),
-		str(e.DeviceType), str(e.Event), ptrStr(e.SrcIP), ptrStr(e.DstIP),
+		str(e.DeviceType), str(e.Event), inet(e.SrcIP), inet(e.DstIP),
 		str(e.Proto), ptrInt(e.DstPort),
 		ptrInt(e.SrcPort), str(e.Action),
 		str(e.MAC), ptrInt(e.VLANID), str(e.IfName), str(e.PeerIfName),
@@ -93,7 +104,7 @@ func (e *LogEntry) values() []any {
 		str(e.ClientMAC), str(e.SSID), str(e.Radio), ptrInt(e.Reason),
 		ptrInt(e.SignalDBM),
 		ptrInt(e.TxRateMbps), str(e.EAPStatus),
-		ptrStr(e.OSPFNbr), ptrStr(e.Gateway), str(e.RouteDst), str(e.DHCPMAC),
+		inet(e.OSPFNbr), inet(e.Gateway), str(e.RouteDst), str(e.DHCPMAC),
 		ptrInt(e.ConntrackCt),
 		e.RawLine,
 	}

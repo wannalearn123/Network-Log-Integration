@@ -126,9 +126,18 @@ existing behaviour. Changes apply within one second.
 | `/` | filter host, event, IP, MAC, SSID |
 | `↑` `↓` / `j` `k` | scroll the focused pane |
 | `tab` | switch focus between logs and anomalies |
+| `enter` | open the selected row's detail (every parsed column + raw line) |
+| `o` | security overview (top sources, detections by type) |
+| `e` | export the visible rows to CSV |
 | `R` | rules editor |
 | `P` | parser editor |
 | `?` | help |
+
+CSV export writes two files into `exports/` (`logs-<timestamp>.csv` and
+`logs-<timestamp>-anomalies.csv`) and never overwrites an existing file; a
+numeric suffix is added instead. Anomaly rows carry `type` and `entity`
+extracted from the stored `features` document, so they join cleanly against
+the log rows.
 
 The rules editor supports add, edit, toggle, delete and **preview**: pressing
 `p` dry-runs the rule against the last five minutes and reports how often it
@@ -161,7 +170,12 @@ by the former C collector) and `internal/rules/testdata/python_hits.txt`
 - UDP syslog and bounded ingest batches can lose data under load; offsets are
   persisted atomically, but records already buffered at an unclean kill may repeat.
 - Timestamp inference for traditional syslog assumes current year and UTC.
-- IPv6 and full RFC 5424 parsing are not supported.
+- IPv6 addresses in `src_ip`/`dst_ip`/`ospf_nbr`/`gateway` are parsed and
+  stored; a malformed address is written as NULL rather than failing its batch.
+  The address family is not used for network-prefix grouping or policy.
+  Full RFC 5424 structured-data parsing is not supported.
+- A failed anomaly write is logged and counted but does not abort the rest of
+  that detection round, so one bad row cannot hide other detections.
 - Telegram delivery is queued with bounded retries and may drop alerts when full.
 - Database schema is initialized only for a fresh volume; future schema changes
   require explicit migrations rather than recreating the volume.
@@ -172,4 +186,4 @@ by the former C collector) and `internal/rules/testdata/python_hits.txt`
 `internal/rules/`: detection engine · `internal/pipeline/`: tailer, ingest,
 detector, alerts · `internal/store/`: PostgreSQL · `internal/tui/`: dashboard ·
 `config/`: editable rules and parser definitions · `docker/`: images/schema ·
-`data/syslog/`: collected logs.
+`data/syslog/`: collected logs · `exports/`: CSV output.

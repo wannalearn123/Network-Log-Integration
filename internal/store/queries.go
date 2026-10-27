@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // inetColumns are cast explicitly so Go sees plain strings instead of a
@@ -46,26 +47,43 @@ var maxRowsPerInsert = maxBindParams / len(LogColumns)
 // the parameter limit requires.
 //
 // A single statement cannot exceed 65535 bind parameters, so a large batch is
-// chunked rather than rejected. Chunking is transparent to callers: either the
-// whole batch is written or an error is returned.
+// chunked rather than rejected. All chunks run in one transaction: either the
+// whole batch is written or none of it is, so a caller that retries after an
+// error cannot duplicate the chunks that had already succeeded.
 func (s *Store) InsertLogBatch(ctx context.Context, entries []*LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin insert batch: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	for start := 0; start < len(entries); start += maxRowsPerInsert {
 		end := start + maxRowsPerInsert
 		if end > len(entries) {
 			end = len(entries)
 		}
-		if err := s.insertChunk(ctx, entries[start:end]); err != nil {
+		if err := insertChunk(ctx, tx, entries[start:end]); err != nil {
 			return err
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit insert batch: %w", err)
 	}
 	return nil
 }
 
+// execer is satisfied by both a pool and a transaction.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 // insertChunk writes one statement's worth of rows.
-func (s *Store) insertChunk(ctx context.Context, entries []*LogEntry) error {
+func insertChunk(ctx context.Context, db execer, entries []*LogEntry) error {
 	var b strings.Builder
 	b.WriteString(insertPrefix)
 	args := make([]any, 0, len(entries)*len(LogColumns))
@@ -86,7 +104,7 @@ func (s *Store) insertChunk(ctx context.Context, entries []*LogEntry) error {
 		args = append(args, e.values()...)
 	}
 
-	if _, err := s.Pool.Exec(ctx, b.String(), args...); err != nil {
+	if _, err := db.Exec(ctx, b.String(), args...); err != nil {
 		return fmt.Errorf("store: insert %d log rows: %w", len(entries), err)
 	}
 	return nil

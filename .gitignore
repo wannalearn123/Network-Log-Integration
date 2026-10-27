@@ -5,9 +5,10 @@
 /siskamlan
 *.test
 
-# Runtime data — syslog feeds, postgres volume, pipeline logs
+# Runtime data — syslog feeds, postgres volume, pipeline logs, CSV exports
 data/
 logs/
+exports/
 .pipeline/
 *.log
 

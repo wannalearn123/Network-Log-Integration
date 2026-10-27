@@ -320,3 +320,52 @@ func (*fakeError) Error() string { return "fake error" }
 
 // Compile-time check that a parsed entry is usable by the detector path.
 var _ = parser.Parse
+
+// failingInsertStore fails the first InsertAnomaly only.
+type failingInsertStore struct {
+	*fakeDetectorStore
+	failFirst bool
+	failed    bool
+}
+
+func (f *failingInsertStore) InsertAnomaly(ctx context.Context, a store.Anomaly, w int) (int, error) {
+	if f.failFirst && !f.failed {
+		f.failed = true
+		return 0, errFake
+	}
+	return f.fakeDetectorStore.InsertAnomaly(ctx, a, w)
+}
+
+// TestOneFailedHitDoesNotSuppressOthers is the regression test for error
+// isolation: a failure recording one detection must not abort the round.
+func TestOneFailedHitDoesNotSuppressOthers(t *testing.T) {
+	// Two MAC flaps on distinct MACs, enough to trip MAC_FLAP twice.
+	var rows []*store.LogEntry
+	for i := 0; i < 3; i++ {
+		rows = append(rows, &store.LogEntry{
+			Event: "mac_flap", DeviceType: "switch", MAC: "aa:bb:cc:00:00:01",
+			RawLine: "flap one",
+		})
+		rows = append(rows, &store.LogEntry{
+			Event: "mac_flap", DeviceType: "switch", MAC: "aa:bb:cc:00:00:02",
+			RawLine: "flap two",
+		})
+	}
+
+	fake := &failingInsertStore{fakeDetectorStore: newFakeDetectorStore(), failFirst: true}
+	fake.rows = rows
+
+	d := testDetector(t, fake)
+	d.OnHits = func([]rules.Hit) {}
+
+	if err := d.detectOnce(context.Background()); err != nil {
+		t.Fatalf("detectOnce returned an error for a single failed hit: %v", err)
+	}
+	if d.RecordErrors == 0 {
+		t.Fatal("the failed hit was not counted")
+	}
+	// The second MAC must still have been recorded.
+	if fake.fakeDetectorStore.insertCalls == 0 {
+		t.Fatal("no detection recorded after the first failed; round was aborted")
+	}
+}

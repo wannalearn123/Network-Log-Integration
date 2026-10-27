@@ -45,6 +45,8 @@ type Detector struct {
 	Notify func(severity, description string, anomalyID int)
 	// OnHits is called with each detection round's hits (for the TUI).
 	OnHits func([]rules.Hit)
+	// RecordErrors counts individual detections that failed to persist.
+	RecordErrors int
 }
 
 // Run detects until ctx is cancelled.
@@ -117,8 +119,14 @@ func (d *Detector) detectOnce(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		// A single failed write must not suppress the other detections in this
+		// window: log it and continue, so one bad row cannot hide an attack.
 		if err := d.recordHit(ctx, hit, window); err != nil {
-			return err
+			if ctx.Err() != nil {
+				return nil
+			}
+			log.Printf("detector: recording %s failed: %v", hit.Type, err)
+			d.RecordErrors++
 		}
 	}
 	return nil

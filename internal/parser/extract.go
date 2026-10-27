@@ -36,13 +36,10 @@ func extractFields(e *Entry, line string) {
 			e.DstIP = v
 		}
 	}
-	// Strip ":port" suffixes.
-	if i := strings.IndexByte(e.SrcIP, ':'); i >= 0 {
-		e.SrcIP = e.SrcIP[:i]
-	}
-	if i := strings.IndexByte(e.DstIP, ':'); i >= 0 {
-		e.DstIP = e.DstIP[:i]
-	}
+	// Normalise addresses: keep IPv6 intact, strip an IPv4 ":port" suffix and
+	// reject nothing here (the store nulls out anything unparseable).
+	e.SrcIP = CleanIP(e.SrcIP)
+	e.DstIP = CleanIP(e.DstIP)
 
 	extractProtoGeneric(line, low, e)
 	if p := extractPortGeneric(line, false); p > 0 {

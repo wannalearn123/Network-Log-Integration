@@ -3,21 +3,9 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
-
-// LogRow is the flattened shape the dashboard renders.
-type LogRow struct {
-	Timestamp  time.Time
-	Hostname   string
-	DeviceType string
-	Event      string
-	SrcIP      string
-	DstIP      string
-	Proto      string
-	DstPort    *int
-	Entity     string
-}
 
 // AnomalyRow is the flattened anomaly shape the dashboard renders.
 type AnomalyRow struct {
@@ -26,6 +14,10 @@ type AnomalyRow struct {
 	Severity    string
 	Description string
 	RepeatCount int
+	WindowStart time.Time
+	WindowEnd   time.Time
+	Score       *float64
+	Features    string
 }
 
 // Stats holds the header counters.
@@ -41,24 +33,54 @@ type Stats struct {
 	Low            int
 }
 
+// SourceCount is one entry in the security overview.
+type SourceCount struct {
+	Source string
+	Count  int
+}
+
+// TypeCount is one entry in the detection breakdown.
+type TypeCount struct {
+	Type  string
+	Count int
+}
+
+// recentLogsSelect mirrors buildWindowSelect but omits the time filter and uses
+// the caller's ordering, so the dashboard can page through history.
+func recentLogsSelect(withFilter bool, limit int) string {
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	for i, c := range LogColumns {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		if inetColumns[c] {
+			b.WriteString("host(" + c + ") AS " + c)
+		} else {
+			b.WriteString(c)
+		}
+	}
+	b.WriteString(" FROM logs")
+	if withFilter {
+		b.WriteString(` WHERE hostname ILIKE $1 OR event ILIKE $1 OR device_type ILIKE $1
+		             OR host(src_ip) ILIKE $1 OR host(dst_ip) ILIKE $1
+		             OR mac ILIKE $1 OR client_mac ILIKE $1 OR ssid ILIKE $1
+		             OR ifname ILIKE $1 OR proto ILIKE $1`)
+	}
+	fmt.Fprintf(&b, " ORDER BY timestamp DESC LIMIT %d", limit)
+	return b.String()
+}
+
 // RecentLogs returns the newest rows, optionally filtered by a substring.
-func (s *Store) RecentLogs(ctx context.Context, limit int, search string) ([]LogRow, error) {
+func (s *Store) RecentLogs(ctx context.Context, limit int, search string) ([]*LogEntry, error) {
 	if limit <= 0 {
 		limit = 200
 	}
-	query := `SELECT timestamp, COALESCE(hostname,''), COALESCE(device_type,''),
-	                 COALESCE(event,''), COALESCE(host(src_ip),''), COALESCE(host(dst_ip),''),
-	                 COALESCE(proto,''), dst_port,
-	                 COALESCE(client_mac, mac, host(dst_ip), '')
-	          FROM logs`
+	query := recentLogsSelect(search != "", limit)
 	args := []any{}
 	if search != "" {
-		query += ` WHERE hostname ILIKE $1 OR event ILIKE $1 OR device_type ILIKE $1
-		             OR host(src_ip) ILIKE $1 OR host(dst_ip) ILIKE $1
-		             OR mac ILIKE $1 OR client_mac ILIKE $1 OR ssid ILIKE $1`
 		args = append(args, "%"+search+"%")
 	}
-	query += fmt.Sprintf(" ORDER BY timestamp DESC LIMIT %d", limit)
 
 	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
@@ -66,14 +88,15 @@ func (s *Store) RecentLogs(ctx context.Context, limit int, search string) ([]Log
 	}
 	defer rows.Close()
 
-	out := make([]LogRow, 0, limit)
+	out := make([]*LogEntry, 0, limit)
 	for rows.Next() {
-		var r LogRow
-		if err := rows.Scan(&r.Timestamp, &r.Hostname, &r.DeviceType, &r.Event,
-			&r.SrcIP, &r.DstIP, &r.Proto, &r.DstPort, &r.Entity); err != nil {
+		e := &LogEntry{}
+		sc := newRowScanner(e)
+		if err := rows.Scan(sc.dest()...); err != nil {
 			return nil, fmt.Errorf("store: scan recent log: %w", err)
 		}
-		out = append(out, r)
+		sc.collect()
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }
@@ -84,7 +107,9 @@ func (s *Store) RecentAnomalies(ctx context.Context, limit int, search string) (
 		limit = 100
 	}
 	query := `SELECT id, timestamp, COALESCE(severity,''), COALESCE(description,''),
-	                 COALESCE((features->>'repeat_count')::int, 1)
+	                 COALESCE((features->>'repeat_count')::int, 1),
+	                 window_start, window_end, anomaly_score,
+	                 COALESCE(features::text, '{}')
 	          FROM anomalies`
 	args := []any{}
 	if search != "" {
@@ -102,7 +127,8 @@ func (s *Store) RecentAnomalies(ctx context.Context, limit int, search string) (
 	out := make([]AnomalyRow, 0, limit)
 	for rows.Next() {
 		var r AnomalyRow
-		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Severity, &r.Description, &r.RepeatCount); err != nil {
+		if err := rows.Scan(&r.ID, &r.Timestamp, &r.Severity, &r.Description,
+			&r.RepeatCount, &r.WindowStart, &r.WindowEnd, &r.Score, &r.Features); err != nil {
 			return nil, fmt.Errorf("store: scan recent anomaly: %w", err)
 		}
 		out = append(out, r)
@@ -131,6 +157,53 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		return Stats{}, fmt.Errorf("store: stats: %w", err)
 	}
 	return st, nil
+}
+
+// TopSources returns the entities that triggered the most detections.
+func (s *Store) TopSources(ctx context.Context, limit int) ([]SourceCount, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.Pool.Query(ctx, fmt.Sprintf(`
+		SELECT features->>'entity' AS entity, COUNT(*) AS n
+		FROM anomalies
+		WHERE features->>'entity' IS NOT NULL
+		GROUP BY entity ORDER BY n DESC LIMIT %d`, limit))
+	if err != nil {
+		return nil, fmt.Errorf("store: top sources: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SourceCount
+	for rows.Next() {
+		var sc SourceCount
+		if err := rows.Scan(&sc.Source, &sc.Count); err != nil {
+			return nil, fmt.Errorf("store: scan top source: %w", err)
+		}
+		out = append(out, sc)
+	}
+	return out, rows.Err()
+}
+
+// DetectionBreakdown returns counts grouped by detection type.
+func (s *Store) DetectionBreakdown(ctx context.Context) ([]TypeCount, error) {
+	rows, err := s.Pool.Query(ctx, `
+		SELECT COALESCE(features->>'type', 'UNKNOWN') AS t, COUNT(*) AS n
+		FROM anomalies GROUP BY t ORDER BY n DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: detection breakdown: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TypeCount
+	for rows.Next() {
+		var tc TypeCount
+		if err := rows.Scan(&tc.Type, &tc.Count); err != nil {
+			return nil, fmt.Errorf("store: scan detection type: %w", err)
+		}
+		out = append(out, tc)
+	}
+	return out, rows.Err()
 }
 
 // RecentRawLines returns distinct recent raw lines, for the parser editor.

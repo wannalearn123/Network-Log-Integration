@@ -34,9 +34,10 @@ func TestRenderWithRows(t *testing.T) {
 	port := 22
 	m := &Model{search: newSearchInput(), view: viewDashboard, focusLogs: true}
 	m.width, m.height = 140, 40
-	m.logs = []store.LogRow{
+	src := "10.0.0.5"
+	m.logs = []*store.LogEntry{
 		{Timestamp: time.Now(), Hostname: "fw-1", DeviceType: "firewall",
-			Event: "fw_block", SrcIP: "10.0.0.5", DstPort: &port},
+			Event: "fw_block", SrcIP: &src, DstPort: &port},
 	}
 	m.anomalies = []store.AnomalyRow{
 		{ID: 1, Timestamp: time.Now(), Severity: "CRITICAL",
@@ -100,7 +101,7 @@ func TestSearchFilterPropagates(t *testing.T) {
 // TestKeyNavigation checks basic key handling does not panic and scrolls.
 func TestKeyNavigation(t *testing.T) {
 	m := &Model{search: newSearchInput(), view: viewDashboard, width: 120, height: 40}
-	m.logs = make([]store.LogRow, 50)
+	m.logs = make([]*store.LogEntry, 50)
 
 	for _, key := range []string{"j", "j", "k", "tab", "g", "p", "p"} {
 		msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
@@ -217,5 +218,99 @@ func TestOpenEditors(t *testing.T) {
 	m.view = viewParsers
 	if out := m.View(); !strings.Contains(out, "PARSERS") {
 		t.Fatalf("parsers view not rendered: %q", out)
+	}
+}
+
+// TestDetailModalShowsParsedFields ensures the detail view exposes the parsed
+// columns, which is how a parser profile is verified.
+func TestDetailModalShowsParsedFields(t *testing.T) {
+	src := "2001:db8::1"
+	port := 443
+	e := &store.LogEntry{
+		Timestamp: time.Now(), Hostname: "fw-1", DeviceType: "firewall",
+		Event: "fw_block", SrcIP: &src, DstPort: &port,
+		Action: "deny", RawLine: "raw text here",
+	}
+	d := newLogDetail(e)
+	d.setRaw(e.RawLine)
+	out := d.view(120, 40)
+	for _, want := range []string{"event", "fw_block", "src_ip", "2001:db8::1", "raw_line", "raw text here"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("detail view missing %q", want)
+		}
+	}
+}
+
+// TestAnomalyDetailShowsFeatures checks detections expose their JSON features.
+func TestAnomalyDetailShowsFeatures(t *testing.T) {
+	a := store.AnomalyRow{
+		ID: 7, Timestamp: time.Now(), Severity: "HIGH",
+		Description: "[RULE] Port scan", RepeatCount: 3,
+		Features: `{"type":"PORT_SCAN","entity":"10.0.0.5"}`,
+	}
+	d := newAnomalyDetail(a)
+	out := d.view(120, 40)
+	for _, want := range []string{"#7", "HIGH", "repeat_count", "3", "features"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("anomaly detail missing %q", want)
+		}
+	}
+}
+
+// TestEnterOpensDetail checks the dashboard opens a detail view on enter.
+func TestEnterOpensDetail(t *testing.T) {
+	m := &Model{search: newSearchInput(), view: viewDashboard, width: 100, height: 30, focusLogs: true}
+	m.logs = []*store.LogEntry{{Timestamp: time.Now(), Hostname: "h", Event: "e"}}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		_ = cmd
+	}
+	if m.view != viewDetail {
+		t.Fatalf("view = %v, want detail", m.view)
+	}
+	if m.detail == nil {
+		t.Fatal("detail modal not set")
+	}
+	// esc returns to the dashboard
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.view != viewDashboard {
+		t.Fatalf("view after esc = %v, want dashboard", m.view)
+	}
+}
+
+// TestExportConfirmFlow checks e opens the prompt and esc cancels.
+func TestExportConfirmFlow(t *testing.T) {
+	m := &Model{search: newSearchInput(), view: viewDashboard, width: 100, height: 30}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if m.view != viewExportConfirm {
+		t.Fatalf("view = %v, want export confirm", m.view)
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.view != viewDashboard {
+		t.Fatalf("view after cancel = %v, want dashboard", m.view)
+	}
+}
+
+// TestOverviewRendering checks the overview panels format counts.
+func TestOverviewRendering(t *testing.T) {
+	lines := renderOverview(
+		[]store.SourceCount{{Source: "10.0.0.5", Count: 4}, {Source: "2001:db8::1", Count: 2}},
+		[]store.TypeCount{{Type: "PORT_SCAN", Count: 3}},
+	)
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"Top detection sources", "10.0.0.5", "2001:db8::1", "PORT_SCAN"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("overview missing %q", want)
+		}
+	}
+}
+
+// TestBarWidthNeverZeroForPositiveCount avoids invisible bars.
+func TestBarWidthNeverZeroForPositiveCount(t *testing.T) {
+	if got := barWidth(1, 1000, 24); got < 1 {
+		t.Fatalf("barWidth = %d, want >= 1", got)
+	}
+	if got := barWidth(0, 1000, 24); got != 0 {
+		t.Fatalf("barWidth(0) = %d, want 0", got)
 	}
 }

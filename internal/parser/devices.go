@@ -1,6 +1,9 @@
 package parser
 
-import "strings"
+import (
+	"net/netip"
+	"strings"
+)
 
 // hostHasToken reports whether the lowercased hostname contains token,
 // possibly followed by digits, as a delimiter-separated component.
@@ -121,10 +124,40 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-// collectIPs returns up to two IPv4 addresses in message order.
+// collectIPs returns up to two addresses in message order, IPv4 or IPv6.
 func collectIPs(msg string) []string {
 	var found []string
 	for p := 0; p < len(msg); p++ {
+		// Try IPv6 first: a run of hex digits and colons.
+		if isHex(msg[p]) {
+			q := p
+			for q < len(msg) && (isHex(msg[q]) || msg[q] == ':') && (q-p) < 45 {
+				q++
+			}
+			if q-p >= 2 && strings.Contains(msg[p:q], ":") {
+				before := byte(' ')
+				if p > 0 {
+					before = msg[p-1]
+				}
+				var after byte
+				if q < len(msg) {
+					after = msg[q]
+				}
+				if !isWordByte(before) && (after == 0 || !isHex(after) && after != ':') {
+					cand := strings.Trim(msg[p:q], ":")
+					if cand != "" {
+						if addr, err := netip.ParseAddr(cand); err == nil && addr.Is6() {
+							found = append(found, addr.String())
+							if len(found) >= 2 {
+								return found
+							}
+							p = q - 1
+							continue
+						}
+					}
+				}
+			}
+		}
 		if !isDigit(msg[p]) {
 			continue
 		}
@@ -328,18 +361,24 @@ func extractVLAN(msg string, e *Entry) {
 	}
 }
 
-// copyToken copies alnum plus '/' and '.'.
+// copyToken copies an address-like token. Colons are kept so IPv6 survives;
+// only genuinely non-address characters terminate the token.
 func copyToken(src string) string {
 	var b strings.Builder
 	for i := 0; i < len(src); i++ {
 		c := src[i]
-		if isAlpha(c) || isDigit(c) || c == '/' || c == '.' {
+		if isAlpha(c) || isDigit(c) || c == '/' || c == '.' || c == ':' {
 			b.WriteByte(c)
-		} else {
-			break
+			continue
 		}
+		break
 	}
-	return b.String()
+	out := b.String()
+	// A trailing colon can appear from "addr: rest"; trim it before validating.
+	if trimmed := strings.TrimRight(out, ":"); ValidIP(trimmed) {
+		return trimmed
+	}
+	return strings.TrimRight(out, ":")
 }
 
 // findIfaceAt scans low for an interface-shaped token at or after fromOff and
@@ -512,7 +551,7 @@ func extractOSPF(msg, low string, e *Entry) {
 // extractGateway reads gateway= and dst-address=.
 func extractGateway(msg string, e *Entry) {
 	if v, ok := extractKV(msg, "gateway"); ok {
-		e.Gateway = truncate(v, 45)
+		e.Gateway = CleanIP(v)
 	}
 	if v, ok := extractKV(msg, "dst-address"); ok {
 		e.RouteDst = truncate(v, 45)

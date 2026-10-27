@@ -20,4 +20,8 @@ See README.md for setup, architecture, configuration and runtime limitations.
 - Behaviour is pinned by two fixtures: `internal/parser/testdata/golden.jsonl`
   (parity with the former C parser) and `internal/rules/testdata/python_hits.txt`
   (parity with the former Python detector). Update them only with a deliberate
-  behaviour change.
+  behaviour change. IPv6 lines are the one sanctioned divergence: the C parser
+  truncated them, so the parity test asserts valid IPv6 instead of byte equality.
+- IPv4 and IPv6 addresses are accepted. The store writes an unparseable
+  address as NULL instead of failing the batch, so a bad value can never
+  poison ingest.
