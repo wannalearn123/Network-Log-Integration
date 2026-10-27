@@ -85,17 +85,23 @@ func main() {
 
 // buildRuntime assembles the shared runtime: store, rules, parser config and
 // supervisor.
-func buildRuntime(ctx context.Context) (*runtime, error) {
-	paths := config.DefaultPaths(projectRoot)
+// configs holds the loaded, hot-reloadable configuration.
+type configs struct {
+	paths   config.Paths
+	rules   *config.File[rules.RulesFile]
+	parsers *pipeline.ParserProvider
+}
+
+// loadConfigs seeds and loads both YAML files under root. It touches no
+// network resource, so it can be tested without PostgreSQL.
+func loadConfigs(root string) (*configs, error) {
+	paths := config.DefaultPaths(root)
 
 	rulesFile := config.NewFile[rules.RulesFile](paths.Rules)
 	rulesFile.Decode = rules.Decode
 	rulesFile.Validate = rules.Validate
 	if err := config.LoadOrSeed(rulesFile, rules.DefaultRulesFile(), rules.Encode); err != nil {
 		return nil, fmt.Errorf("rules config: %w", err)
-	}
-	if rf, _ := rulesFile.Current(); len(rf.Rules) > 0 {
-		log.Printf("rules: %d loaded from %s", len(rf.Rules), paths.Rules)
 	}
 
 	parsersFile := config.NewFile[parser.Config](paths.Parsers)
@@ -108,10 +114,26 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 	if err := parsersFile.Load(); err != nil {
 		return nil, fmt.Errorf("parser config: %w", err)
 	}
+
+	if rf, _ := rulesFile.Current(); len(rf.Rules) > 0 {
+		log.Printf("rules: %d loaded from %s", len(rf.Rules), paths.Rules)
+	}
 	if pc, _ := parsersFile.Current(); true {
 		log.Printf("parsers: %d device profiles from %s", len(pc.Devices), paths.Parsers)
 	}
-	provider := pipeline.NewParserProvider(parsersFile)
+
+	return &configs{
+		paths:   paths,
+		rules:   rulesFile,
+		parsers: pipeline.NewParserProvider(parsersFile),
+	}, nil
+}
+
+func buildRuntime(ctx context.Context) (*runtime, error) {
+	cfgs, err := loadConfigs(projectRoot)
+	if err != nil {
+		return nil, err
+	}
 
 	s, err := store.OpenWithRetry(ctx, store.OptionsFromEnv(), 10)
 	if err != nil {
@@ -120,13 +142,13 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 
 	sup := pipeline.New(pipeline.Config{
 		Store:     s,
-		Rules:     rulesFile,
-		Parsers:   provider,
+		Rules:     cfgs.rules,
+		Parsers:   cfgs.parsers,
 		SyslogDir: filepath.Join(projectRoot, "data", "syslog"),
 		StateFile: filepath.Join(projectRoot, "data", ".pipeline", "offsets.json"),
 		Notifier:  notify.New(),
 	})
-	return &runtime{store: s, supervisor: sup, paths: paths}, nil
+	return &runtime{store: s, supervisor: sup, paths: cfgs.paths}, nil
 }
 
 // runtime bundles the long-lived components built for a run.
