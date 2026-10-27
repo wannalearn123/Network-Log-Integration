@@ -4,24 +4,21 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
 )
 
-// testStore connects using PG* env, skipping when PostgreSQL is unavailable so
-// the unit suite still runs without a database.
+// testStore connects using PG* env. PostgreSQL is required: these tests verify
+// real SQL behaviour, and skipping silently would hide schema or query bugs.
 func testStore(t *testing.T) *Store {
 	t.Helper()
-	if os.Getenv("SISKAMLAN_SKIP_DB") != "" {
-		t.Skip("SISKAMLAN_SKIP_DB set")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	s, err := Open(ctx, OptionsFromEnv())
 	if err != nil {
-		t.Skipf("no database: %v", err)
+		t.Fatalf("PostgreSQL is required for store tests (start it with "+
+			"`docker compose up -d postgres`): %v", err)
 	}
 	t.Cleanup(s.Close)
 	return s
@@ -161,5 +158,63 @@ func TestAnomalyAndCooldownRoundTrip(t *testing.T) {
 	cd, _ = s.GetCooldown(ctx, sig)
 	if cd == nil || cd.RepeatCount != 5 {
 		t.Fatalf("cooldown after bump = %+v, want repeat=5", cd)
+	}
+}
+
+// TestInsertLargeBatchChunksAboveParameterLimit is the regression test for the
+// 65535 bind-parameter limit: a batch larger than one statement allows must
+// still be written completely.
+func TestInsertLargeBatchChunksAboveParameterLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	tag := randTag()
+
+	// Comfortably above maxRowsPerInsert so chunking must happen.
+	n := maxRowsPerInsert*2 + 17
+	batch := make([]*LogEntry, n)
+	now := time.Now().UTC()
+	for i := range batch {
+		batch[i] = &LogEntry{
+			Timestamp: now, Hostname: tag, DeviceType: "other",
+			Event: "unknown", RawLine: "bulk",
+		}
+	}
+
+	if err := s.InsertLogBatch(ctx, batch); err != nil {
+		t.Fatalf("InsertLogBatch(%d rows): %v", n, err)
+	}
+	t.Cleanup(func() {
+		s.Pool.Exec(context.Background(), "DELETE FROM logs WHERE hostname = $1", tag)
+	})
+
+	var count int
+	if err := s.Pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM logs WHERE hostname = $1", tag).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != n {
+		t.Fatalf("inserted %d rows, want %d — chunking lost data", count, n)
+	}
+}
+
+// TestMaxRowsPerInsertFitsParameterLimit guards the derivation.
+func TestMaxRowsPerInsertFitsParameterLimit(t *testing.T) {
+	if maxRowsPerInsert*len(LogColumns) > maxBindParams {
+		t.Fatalf("%d rows x %d cols exceeds %d parameters",
+			maxRowsPerInsert, len(LogColumns), maxBindParams)
+	}
+	if maxRowsPerInsert < 100 {
+		t.Fatalf("maxRowsPerInsert = %d is suspiciously small", maxRowsPerInsert)
+	}
+}
+
+// TestMigrateIsIdempotent checks repeated migrations do not error or leak locks.
+func TestMigrateIsIdempotent(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if err := s.Migrate(ctx); err != nil {
+			t.Fatalf("migrate #%d: %v", i+1, err)
+		}
 	}
 }

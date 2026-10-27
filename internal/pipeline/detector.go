@@ -23,9 +23,20 @@ const (
 	RetentionPeriod = 1 * time.Hour
 )
 
+// detectorStore is the subset of the database the detector needs. It is an
+// interface so detection logic can be tested without PostgreSQL.
+type detectorStore interface {
+	QueryWindow(ctx context.Context, windowSeconds int) ([]*store.LogEntry, error)
+	InsertAnomaly(ctx context.Context, a store.Anomaly, windowSeconds int) (int, error)
+	BumpAnomaly(ctx context.Context, anomalyID, repeatCount int) error
+	GetCooldown(ctx context.Context, signature string) (*store.Cooldown, error)
+	SaveCooldown(ctx context.Context, signature string, anomalyID, repeatCount int) error
+	PruneHistory(ctx context.Context, logDays, anomalyDays int) error
+}
+
 // Detector runs the rules engine on a schedule and records anomalies.
 type Detector struct {
-	Store *store.Store
+	Store detectorStore
 	Rules *config.File[rules.RulesFile]
 	// LogRetentionDays / AnomalyRetentionDays: 0 disables that table's prune.
 	LogRetentionDays     int

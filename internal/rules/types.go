@@ -75,8 +75,5 @@ var KnownFields = []string{
 	"$identity", "$mac",
 }
 
-// MetadataFields are descriptive columns that are not useful for grouping.
-var nonGroupable = map[string]bool{"hostname": true, "facility": true, "severity": true}
-
 // Severities in ascending order, used for sorting hits.
 var Severities = []string{"LOW", "MEDIUM", "HIGH", "CRITICAL"}

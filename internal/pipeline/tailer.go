@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -36,9 +37,10 @@ type Tailer struct {
 }
 
 type tailStream struct {
-	file   *os.File
-	offset int64
-	buf    []byte
+	file       *os.File
+	offset     int64
+	buf        []byte
+	discarding bool
 }
 
 // Run tails until ctx is cancelled, sending each complete line to out.
@@ -102,13 +104,15 @@ func (t *Tailer) Run(ctx context.Context, out chan<- string) error {
 		}
 
 		// Persist positions even when idle so a clean shutdown resumes exactly.
+		// committedOffset excludes the buffered partial line, so a restart
+		// re-reads lines that were never emitted.
 		for path, s := range streams {
 			key, err := filepath.Abs(path)
 			if err != nil {
 				key = path
 			}
 			if info, err := s.file.Stat(); err == nil {
-				offsets[key] = fileOffset{Inode: inodeOf(info), Offset: s.offset}
+				offsets[key] = fileOffset{Inode: inodeOf(info), Offset: committedOffset(s)}
 			}
 		}
 		if time.Since(lastSave) >= saveEvery {
@@ -180,6 +184,7 @@ func (t *Tailer) track(ctx context.Context, path string, streams map[string]*tai
 		}
 		s.offset = 0
 		s.buf = s.buf[:0]
+		s.discarding = false
 	}
 
 	chunk := make([]byte, 64*1024)
@@ -187,27 +192,75 @@ func (t *Tailer) track(ctx context.Context, path string, streams map[string]*tai
 		n, readErr := s.file.Read(chunk)
 		if n > 0 {
 			s.offset += int64(n)
-			s.buf = append(s.buf, chunk[:n]...)
+			data := chunk[:n]
+
+			// Drop the remainder of an oversized line up to the next newline.
+			if s.discarding {
+				idx := bytes.IndexByte(data, '\n')
+				if idx < 0 {
+					if readErr != nil || n == 0 {
+						break
+					}
+					continue
+				}
+				s.discarding = false
+				data = data[idx+1:]
+			}
+
+			s.buf = append(s.buf, data...)
 			for {
 				idx := bytes.IndexByte(s.buf, '\n')
 				if idx < 0 {
 					break
 				}
-				line := string(s.buf[:idx])
-				s.buf = append(s.buf[:0], s.buf[idx+1:]...)
+				raw := s.buf[:idx]
+				copy(s.buf, s.buf[idx+1:])
+				s.buf = s.buf[:len(s.buf)-(idx+1)]
+				// A single terminated line over the cap is dropped, not emitted.
+				if len(raw) > MaxPartialLine {
+					if t.OnError != nil {
+						t.OnError(errOversizeLine)
+					}
+					continue
+				}
+				line := string(raw)
 				select {
 				case <-ctx.Done():
 					return nil
 				case out <- line:
 				}
 			}
+			// A file that never emits a newline must not grow without bound.
+			if len(s.buf) > MaxPartialLine {
+				if t.OnError != nil {
+					t.OnError(errOversizeLine)
+				}
+				s.discarding = true
+				s.buf = s.buf[:0]
+			}
 		}
 		if readErr != nil || n == 0 {
 			break
 		}
 	}
-	offsets[key] = fileOffset{Inode: inode, Offset: s.offset}
+	offsets[key] = fileOffset{Inode: inode, Offset: committedOffset(s)}
 	return nil
+}
+
+// MaxPartialLine bounds an unterminated line held in memory (1 MiB).
+const MaxPartialLine = 1024 * 1024
+
+var errOversizeLine = errors.New("tailer: dropped oversized line")
+
+// committedOffset is the position up to which lines were safely emitted. Bytes
+// still buffered as an incomplete line are not counted, so a restart re-reads
+// them rather than losing data.
+func committedOffset(s *tailStream) int64 {
+	off := s.offset - int64(len(s.buf))
+	if off < 0 {
+		return 0
+	}
+	return off
 }
 
 func loadOffsets(path string) map[string]fileOffset {

@@ -36,6 +36,10 @@ type Notifier struct {
 	token   string
 	chatIDs []string
 	apiBase string
+
+	// maxAttempts and backoff are overridable so tests need not sleep.
+	maxAttempts int
+	backoff     func(attempt int) time.Duration
 }
 
 // New builds a notifier from the environment. When notifications are disabled
@@ -48,6 +52,9 @@ func New() *Notifier {
 		minSev:  envMinSeverity(),
 		token:   strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
 		apiBase: strings.TrimRight(getenv("TELEGRAM_API_BASE", defaultAPIBase), "/"),
+
+		maxAttempts: maxAttempts,
+		backoff:     func(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second },
 	}
 	for _, id := range strings.Split(os.Getenv("TELEGRAM_CHAT_ID"), ",") {
 		if id = strings.TrimSpace(id); id != "" {
@@ -112,15 +119,23 @@ func (n *Notifier) worker() {
 
 // deliver retries with exponential backoff.
 func (n *Notifier) deliver(text string) {
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	attempts := n.maxAttempts
+	if attempts <= 0 {
+		attempts = maxAttempts
+	}
+	backoff := n.backoff
+	if backoff == nil {
+		backoff = func(a int) time.Duration { return time.Duration(1<<a) * time.Second }
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
 		if n.sendAll(text) {
 			return
 		}
-		if attempt < maxAttempts-1 {
-			time.Sleep(time.Duration(1<<attempt) * time.Second)
+		if attempt < attempts-1 {
+			time.Sleep(backoff(attempt))
 		}
 	}
-	log.Print("notify: dropping alert after 4 delivery attempts")
+	log.Printf("notify: dropping alert after %d delivery attempts", attempts)
 }
 
 // sendAll posts to every configured chat.

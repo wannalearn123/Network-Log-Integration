@@ -35,13 +35,37 @@ func buildInsertPrefix() string {
 	return "INSERT INTO logs (" + strings.Join(cols, ", ") + ") VALUES "
 }
 
-// InsertLogBatch writes entries in a single statement. A batch of one uses the
-// same path so behaviour is identical regardless of size.
+// maxBindParams is the PostgreSQL protocol limit on parameters per statement.
+const maxBindParams = 65535
+
+// maxRowsPerInsert is the largest batch that fits within maxBindParams.
+// Derived from the column count so adding a column cannot silently overflow.
+var maxRowsPerInsert = maxBindParams / len(LogColumns)
+
+// InsertLogBatch writes entries, splitting them across as many statements as
+// the parameter limit requires.
+//
+// A single statement cannot exceed 65535 bind parameters, so a large batch is
+// chunked rather than rejected. Chunking is transparent to callers: either the
+// whole batch is written or an error is returned.
 func (s *Store) InsertLogBatch(ctx context.Context, entries []*LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	for start := 0; start < len(entries); start += maxRowsPerInsert {
+		end := start + maxRowsPerInsert
+		if end > len(entries) {
+			end = len(entries)
+		}
+		if err := s.insertChunk(ctx, entries[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+// insertChunk writes one statement's worth of rows.
+func (s *Store) insertChunk(ctx context.Context, entries []*LogEntry) error {
 	var b strings.Builder
 	b.WriteString(insertPrefix)
 	args := make([]any, 0, len(entries)*len(LogColumns))

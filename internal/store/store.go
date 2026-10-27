@@ -120,11 +120,19 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("store: read migrations: %w", err)
 	}
+
 	// Serialize concurrent migrators (ingest and detector start together).
-	if _, err := s.Pool.Exec(ctx, "SELECT pg_advisory_lock(81726391)"); err != nil {
+	// A transaction-scoped advisory lock is released automatically on commit
+	// or rollback, so it can never leak onto a pooled connection.
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin migration: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(81726391)"); err != nil {
 		return fmt.Errorf("store: acquire migration lock: %w", err)
 	}
-	defer s.Pool.Exec(ctx, "SELECT pg_advisory_unlock(81726391)")
 
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -134,9 +142,13 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("store: read %s: %w", entry.Name(), err)
 		}
-		if _, err := s.Pool.Exec(ctx, string(raw)); err != nil {
+		if _, err := tx.Exec(ctx, string(raw)); err != nil {
 			return fmt.Errorf("store: apply %s: %w", entry.Name(), err)
 		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit migrations: %w", err)
 	}
 	return nil
 }

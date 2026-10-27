@@ -83,7 +83,15 @@ func NewParser(cfg *Config) (*Parser, error) {
 	if cfg == nil {
 		return &Parser{}, nil
 	}
+	// Deep-copy so compile() cannot mutate the caller's shared value.
 	compiled := *cfg
+	compiled.Devices = make([]Device, len(cfg.Devices))
+	for i, d := range cfg.Devices {
+		compiled.Devices[i] = d
+		compiled.Devices[i].Fields = append([]FieldRule(nil), d.Fields...)
+		compiled.Devices[i].Events = append([]EventRule(nil), d.Events...)
+		compiled.Devices[i].HostnameMatch = append([]string(nil), d.HostnameMatch...)
+	}
 	if err := compiled.compile(); err != nil {
 		return nil, fmt.Errorf("parser: compile config: %w", err)
 	}

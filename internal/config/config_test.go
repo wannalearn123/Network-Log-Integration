@@ -183,3 +183,44 @@ func bumpMtime(t *testing.T, path string) {
 		t.Fatalf("chtimes: %v", err)
 	}
 }
+
+// TestLoadOrSeedKeepsExistingFile ensures a real user config is never
+// overwritten by the shipped defaults on a later start.
+func TestLoadOrSeedKeepsExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	userContent := "version: 9\nnames: [user-rule]\n"
+	if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := newSampleFile(t, path)
+	if err := LoadOrSeed(f, sample{Version: 1, Names: []string{"seed"}}, encodeSample); err != nil {
+		t.Fatalf("LoadOrSeed: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != userContent {
+		t.Fatalf("existing config was overwritten:\n%s", raw)
+	}
+	got, _ := f.Current()
+	if got.Version != 9 {
+		t.Fatalf("loaded version = %d, want the user's 9", got.Version)
+	}
+}
+
+// TestLoadOrSeedRejectsInvalidSeed checks a bad seed surfaces an error.
+func TestLoadOrSeedRejectsInvalidSeed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rules.yaml")
+	f := NewFile[sample](path)
+	f.Decode = decodeSample
+	f.Validate = func(sample) error { return os.ErrInvalid }
+
+	if err := LoadOrSeed(f, sample{Version: 1}, encodeSample); err == nil {
+		t.Fatal("expected validation to reject the seed")
+	}
+}

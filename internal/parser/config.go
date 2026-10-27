@@ -32,6 +32,9 @@ type Device struct {
 	Fields []FieldRule `yaml:"fields,omitempty" json:"fields,omitempty"`
 	// Events map keywords onto normalized event names, first match wins.
 	Events []EventRule `yaml:"events,omitempty" json:"events,omitempty"`
+
+	// hostRes holds HostnameMatch compiled once by compile().
+	hostRes []*regexp.Regexp
 }
 
 // FieldRule extracts one column from a raw line.
@@ -203,6 +206,16 @@ func validDeviceType(t string) bool {
 // compile pre-compiles regexes so per-line parsing stays fast.
 func (c *Config) compile() error {
 	for di := range c.Devices {
+		d := &c.Devices[di]
+		// Hostname patterns are evaluated for every line, so compile them once.
+		d.hostRes = d.hostRes[:0]
+		for _, expr := range d.HostnameMatch {
+			re, err := regexp.Compile(expr)
+			if err != nil {
+				return err
+			}
+			d.hostRes = append(d.hostRes, re)
+		}
 		for fi := range c.Devices[di].Fields {
 			f := &c.Devices[di].Fields[fi]
 			if f.Strategy == "regex" {
@@ -249,19 +262,13 @@ func (c *Config) applyConfig(e *Entry, line, low string) bool {
 	return false
 }
 
-// match returns the first device whose hostname patterns match.
+// match returns the first device whose hostname patterns match. Patterns are
+// precompiled in compile(), so this runs no regex compilation per line.
 func (c *Config) match(hostname string) *Device {
 	host := strings.ToLower(hostname)
 	for i := range c.Devices {
 		d := &c.Devices[i]
-		if len(d.HostnameMatch) == 0 {
-			continue
-		}
-		for _, expr := range d.HostnameMatch {
-			re, err := regexp.Compile(expr)
-			if err != nil {
-				continue
-			}
+		for _, re := range d.hostRes {
 			if re.MatchString(host) {
 				return d
 			}

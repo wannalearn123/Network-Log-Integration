@@ -20,9 +20,15 @@ const (
 	MaxLineBytes = 1024 * 1024
 )
 
+// logStore is the subset of the database the ingester needs.
+type logStore interface {
+	InsertLogBatch(ctx context.Context, entries []*store.LogEntry) error
+	InsertLogEntry(ctx context.Context, entry *store.LogEntry) error
+}
+
 // Ingester consumes parsed lines and writes them to PostgreSQL in batches.
 type Ingester struct {
-	Store *store.Store
+	Store logStore
 	// Parsers, if set, supplies the hot-reloadable parser.
 	Parsers *ParserProvider
 	// OnBatch, if set, is called after each successful write.

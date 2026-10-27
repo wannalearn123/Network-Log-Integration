@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -159,5 +160,76 @@ func TestTailerNewFileReadFromStart(t *testing.T) {
 	}
 	if got := waitLine(t, out, 2*time.Second); got != "hello" {
 		t.Fatalf("new-file line = %q, want %q", got, "hello")
+	}
+}
+
+// TestTailerPreservesPartialLineAcrossRestart verifies the persisted offset
+// lags the buffered partial line, so a restart re-reads rather than loses it.
+func TestTailerPreservesPartialLineAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state", "offsets.json")
+	path := filepath.Join(dir, "device.log")
+	if err := os.WriteFile(path, []byte("complete\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out1, stop1 := startTailer(t, &Tailer{
+		Dir: dir, StateFile: state,
+		PollInterval: 20 * time.Millisecond, SaveInterval: 25 * time.Millisecond,
+	})
+	time.Sleep(60 * time.Millisecond)
+	// A line without a trailing newline stays buffered, unemitted.
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString("partial line")
+	f.Close()
+	time.Sleep(150 * time.Millisecond)
+	stop1()
+
+	select {
+	case line := <-out1:
+		t.Fatalf("emitted an unterminated line: %q", line)
+	default:
+	}
+
+	// Complete the line while stopped; a correct restart re-reads it whole.
+	f, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	f.WriteString(" finished\n")
+	f.Close()
+
+	out2, stop2 := startTailer(t, &Tailer{
+		Dir: dir, StateFile: state,
+		PollInterval: 20 * time.Millisecond, SaveInterval: 25 * time.Millisecond,
+	})
+	defer stop2()
+
+	if got := waitLine(t, out2, 2*time.Second); got != "partial line finished" {
+		t.Fatalf("restart line = %q, want %q", got, "partial line finished")
+	}
+}
+
+// TestTailerDropsOversizePartialLine ensures a newline-free file cannot grow
+// memory without bound, and reading resumes after the next newline.
+func TestTailerDropsOversizePartialLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "device.log")
+	var errs []error
+	out, stop := startTailer(t, &Tailer{
+		Dir: dir, StateFile: filepath.Join(dir, "state", "offsets.json"),
+		PollInterval: 20 * time.Millisecond, SaveInterval: 25 * time.Millisecond,
+		OnError: func(e error) { errs = append(errs, e) },
+	})
+	defer stop()
+	time.Sleep(80 * time.Millisecond)
+
+	f, _ := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f.Write([]byte(strings.Repeat("x", MaxPartialLine+1024)))
+	f.Write([]byte("\nafter\n"))
+	f.Close()
+
+	if got := waitLine(t, out, 3*time.Second); got != "after" {
+		t.Fatalf("line after oversize = %q, want %q", got, "after")
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected an oversize-line warning")
 	}
 }
