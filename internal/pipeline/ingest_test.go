@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"siskamlan/internal/store"
 )
@@ -190,4 +191,51 @@ func rowsIn(batches [][]*store.LogEntry) int {
 		n += len(b)
 	}
 	return n
+}
+
+// blockingStore hangs on insert until its context is cancelled, simulating an
+// unreachable database during shutdown.
+type blockingStore struct{ released chan struct{} }
+
+func (b *blockingStore) InsertLogBatch(ctx context.Context, entries []*store.LogEntry) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-b.released:
+		return nil
+	}
+}
+
+func (b *blockingStore) InsertLogEntry(ctx context.Context, entry *store.LogEntry) error {
+	return b.InsertLogBatch(ctx, []*store.LogEntry{entry})
+}
+
+// TestShutdownFlushDoesNotHang is the regression test for an unbounded shutdown
+// flush: quitting must not block forever when the database stops responding.
+func TestShutdownFlushDoesNotHang(t *testing.T) {
+	store := &blockingStore{released: make(chan struct{})}
+	defer close(store.released)
+
+	in := &Ingester{Store: store, ShutdownTimeout: 100 * time.Millisecond}
+	in.add("2026-01-02T03:04:05+00:00 host tag: buffered")
+
+	done := make(chan error, 1)
+	go func() { done <- in.flushShutdown() }()
+
+	select {
+	case err := <-done:
+		// A failed shutdown flush is logged, not propagated, so exit is clean.
+		if err != nil {
+			t.Fatalf("flushShutdown returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("flushShutdown blocked past its deadline; quitting would hang")
+	}
+}
+
+// TestShutdownFlushTimeoutIsBounded guards the constant against drift.
+func TestShutdownFlushTimeoutIsBounded(t *testing.T) {
+	if ShutdownFlushTimeout <= 0 || ShutdownFlushTimeout > 15*time.Second {
+		t.Fatalf("ShutdownFlushTimeout = %s, want a short positive bound", ShutdownFlushTimeout)
+	}
 }

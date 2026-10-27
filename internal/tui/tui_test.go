@@ -314,3 +314,46 @@ func TestBarWidthNeverZeroForPositiveCount(t *testing.T) {
 		t.Fatalf("barWidth(0) = %d, want 0", got)
 	}
 }
+
+// TestCtrlCQuitsFromEveryScreen checks the universal exit works even where q is
+// repurposed (editors, detail, export confirm).
+func TestCtrlCQuitsFromEveryScreen(t *testing.T) {
+	screens := map[string]func(*Model){
+		"dashboard":     func(m *Model) { m.view = viewDashboard },
+		"rules":         func(m *Model) { m.view = viewRules },
+		"parsers":       func(m *Model) { m.view = viewParsers },
+		"help":          func(m *Model) { m.view = viewHelp },
+		"overview":      func(m *Model) { m.view = viewOverview },
+		"detail":        func(m *Model) { m.view = viewDetail },
+		"exportConfirm": func(m *Model) { m.view = viewExportConfirm },
+	}
+	for name, setup := range screens {
+		m := &Model{search: newSearchInput(), width: 100, height: 30, focusLogs: true}
+		m.rulesEditor = newRulesEditor("/tmp/nx-rules.yaml", nil)
+		m.parsersEditor = newParsersEditor("/tmp/nx-parsers.yaml", nil)
+		m.detail = newLogDetail(&store.LogEntry{})
+		setup(m)
+
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if cmd == nil {
+			t.Fatalf("%s: ctrl+c returned no command", name)
+		}
+		if _, ok := cmd().(tea.QuitMsg); !ok {
+			t.Fatalf("%s: ctrl+c produced %T, want tea.QuitMsg", name, cmd())
+		}
+	}
+}
+
+// TestQIsContextualNotDestructive checks q does not quit from an editor, so a
+// stray keypress cannot discard unsaved rule edits.
+func TestQIsContextualNotDestructive(t *testing.T) {
+	m := &Model{search: newSearchInput(), width: 100, height: 30}
+	m.rulesEditor = newRulesEditor("/tmp/nx2-rules.yaml", nil)
+	m.view = viewRules
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if cmd != nil {
+		if _, isQuit := cmd().(tea.QuitMsg); isQuit {
+			t.Fatal("q quit the app from inside the rules editor")
+		}
+	}
+}

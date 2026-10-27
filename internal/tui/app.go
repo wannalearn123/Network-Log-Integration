@@ -219,6 +219,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// ctrl+c always exits, from any screen, so there is one guaranteed way out
+	// even while an editor holds unsaved changes.
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+
 	switch m.view {
 	case viewRules:
 		return m, m.rulesEditor.update(msg)
@@ -251,7 +257,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q":
 		return m, tea.Quit
 	case "p":
 		m.paused = !m.paused
@@ -902,7 +908,8 @@ func (m *Model) viewHelp() string {
 	lines := []string{
 		styleBrand.Render("◈ SISKAMLAN") + styleDim.Render("  keyboard reference"),
 		section("Dashboard"),
-		key("q", "quit the process"),
+		key("q", "quit (from the dashboard)"),
+		key("ctrl+c", "quit from any screen"),
 		key("p", "pause / resume live refresh"),
 		key("/", "filter host, event, IP, MAC, SSID, interface"),
 		key("esc", "clear the filter"),

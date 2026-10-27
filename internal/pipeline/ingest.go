@@ -33,11 +33,19 @@ type Ingester struct {
 	Parsers *ParserProvider
 	// OnBatch, if set, is called after each successful write.
 	OnBatch func(inserted, total, dropped int)
+	// ShutdownTimeout overrides ShutdownFlushTimeout (tests use a short one).
+	ShutdownTimeout time.Duration
 
 	total   int
 	dropped int
 	batch   []*store.LogEntry
 }
+
+// ShutdownFlushTimeout bounds the final write when the pipeline stops.
+//
+// The buffer is flushed with a deadline so quitting can never hang when the
+// database is unreachable — exactly when a user most wants to exit.
+const ShutdownFlushTimeout = 5 * time.Second
 
 // Run reads lines from in until it closes or ctx is cancelled.
 func (i *Ingester) Run(ctx context.Context, in <-chan string) error {
@@ -47,11 +55,12 @@ func (i *Ingester) Run(ctx context.Context, in <-chan string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush whatever is buffered so a clean stop does not lose rows.
-			return i.flush(context.Background())
+			// Flush whatever is buffered so a clean stop does not lose rows,
+			// but never block shutdown indefinitely.
+			return i.flushShutdown()
 		case line, ok := <-in:
 			if !ok {
-				return i.flush(context.Background())
+				return i.flushShutdown()
 			}
 			i.add(line)
 		case <-ticker.C:
@@ -64,6 +73,24 @@ func (i *Ingester) Run(ctx context.Context, in <-chan string) error {
 			}
 		}
 	}
+}
+
+// flushShutdown writes the remaining buffer under a deadline. A failure is
+// reported but never blocks exit; the rows are lost rather than hanging.
+func (i *Ingester) flushShutdown() error {
+	timeout := i.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = ShutdownFlushTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	err := i.flush(ctx)
+	if err != nil {
+		log.Printf("ingest: shutdown flush failed after %s, %d rows dropped: %v",
+			timeout, len(i.batch), err)
+	}
+	return nil
 }
 
 // add parses one raw line and buffers the resulting row.

@@ -121,7 +121,7 @@ existing behaviour. Changes apply within one second.
 
 | Key | Action |
 |---|---|
-| `q` | quit |
+| `q` | quit (from the dashboard; `ctrl+c` quits from any screen) |
 | `p` | pause / resume live refresh |
 | `/` | filter host, event, IP, MAC, SSID |
 | `↑` `↓` / `j` `k` | scroll the focused pane |
@@ -173,6 +173,9 @@ by the former C collector) and `internal/rules/testdata/python_hits.txt`
 
 - Simulators generate logs; they are not production routers/firewalls.
 - File offsets and cooldowns are persisted across restarts.
+- Shutdown flushes the pending ingest buffer under a 5 second deadline. If the
+  database is unreachable at that moment the buffered rows are dropped and the
+  loss is logged, rather than blocking the exit.
 - UDP syslog and bounded ingest batches can lose data under load; offsets are
   persisted atomically, but records already buffered at an unclean kill may repeat.
 - Timestamp inference for traditional syslog assumes current year and UTC.

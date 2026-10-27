@@ -161,11 +161,10 @@ func (f *form) floatValue(label string, fallback float64) float64 {
 // view renders the form.
 func (f *form) view(width int) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render(f.title))
+	b.WriteString(styleBrand.Render("◈ " + f.title))
 	b.WriteByte('\n')
 	b.WriteString(styleDim.Render("↑↓ field · ←→ cycle · enter edit · ctrl+s save · esc cancel"))
-	b.WriteByte('\n')
-	b.WriteByte('\n')
+	b.WriteString("\n\n")
 
 	labelWidth := 0
 	for _, fld := range f.fields {
@@ -173,34 +172,50 @@ func (f *form) view(width int) string {
 			labelWidth = w
 		}
 	}
+
 	for i, fld := range f.fields {
+		selected := i == f.cursor
 		marker := "  "
-		if i == f.cursor {
-			marker = styleAccent.Render("▸ ")
+		if selected {
+			marker = styleAccentHi.Render("▸ ")
 		}
+
 		label := padWidth(fld.label, labelWidth)
-		val := fld.value
-		if fld.kind == kindEnum {
-			val = "< " + val + " >"
+		if selected {
+			label = styleText.Bold(true).Render(label)
+		} else {
+			label = styleDim.Render(label)
 		}
-		if val == "" {
-			val = styleDim.Render("(empty)")
+
+		var value string
+		switch {
+		case selected && f.editing:
+			value = f.input.View()
+		case fld.kind == kindEnum:
+			if selected {
+				value = styleAccentHi.Render("< " + fld.value + " >")
+			} else {
+				value = styleText.Render("< " + fld.value + " >")
+			}
+		case fld.value == "":
+			value = styleDim.Render("(empty)")
+		case selected:
+			value = styleAccentHi.Render(fld.value)
+		default:
+			value = styleText.Render(fld.value)
 		}
-		line := marker + styleDim.Render(label) + "  " + val
-		if i == f.cursor && f.editing {
-			line = marker + styleDim.Render(label) + "  " + f.input.View()
-		} else if i == f.cursor {
-			line = marker + styleTitle.Render(label) + "  " + val
-		}
-		b.WriteString(line)
-		if fld.help != "" && i == f.cursor {
-			b.WriteString("\n    " + styleDim.Render(fld.help))
-		}
+
+		b.WriteString(marker + label + "  " + value)
 		b.WriteByte('\n')
+		if selected && fld.help != "" {
+			b.WriteString("    " + styleDim.Render(fld.help))
+			b.WriteByte('\n')
+		}
 	}
+
 	if f.errText != "" {
-		b.WriteString("\n" + styleError.Render(f.errText))
+		b.WriteString("\n" + styleError.Render("! "+f.errText))
 		b.WriteByte('\n')
 	}
-	return modalBox(b.String(), 74)
+	return modalBox(b.String(), minInt(width-4, 76))
 }
