@@ -1,0 +1,113 @@
+version: 1
+window_seconds: 30
+rules:
+  - name: PORT_SCAN
+    enabled: true
+    severity: HIGH
+    description: Port scan from {entity} — {count} ports in {window}s
+    when:
+      all:
+        - field: src_ip
+          op: exists
+        - field: dst_port
+          op: exists
+    group_by:
+      - src_ip
+    count: distinct
+    distinct_on: dst_port
+    rate: 0.4
+  - name: BRUTE_FORCE
+    enabled: true
+    severity: CRITICAL
+    description: Brute force from {entity} — {count} fails in {window}s
+    when:
+      any:
+        - field: event
+          op: contains_any
+          values:
+            - BRUTE
+            - AUTH_FAILURE
+        - all:
+            - field: event
+              op: contains
+              value: FAILED
+            - field: event
+              op: contains
+              value: AUTH
+        - all:
+            - field: event
+              op: contains_any
+              values:
+                - FW_BLOCK
+                - BLOCK
+            - field: dst_port
+              op: in
+              values:
+                - 22
+                - 443
+                - 3389
+                - 21
+                - 23
+    group_by:
+      - $identity
+    rate: 0.4
+  - name: DEAUTH_STORM
+    enabled: true
+    severity: MEDIUM
+    description: Deauth storm from {entity} — {count} in {window}s
+    when:
+      field: event
+      op: contains
+      value: DEAUTH
+    group_by:
+      - $identity
+    rate: 0.3
+    suppress_by:
+      - BRUTE_FORCE
+  - name: FLOOD
+    enabled: true
+    severity: HIGH
+    description: Traffic flood — {count} events in {window}s
+    rate: 8
+  - name: HIGH_DROP_RATE
+    enabled: true
+    severity: MEDIUM
+    description: High firewall drop rate — {count} drops in {window}s
+    when:
+      field: event
+      op: in
+      values:
+        - FW_DROP
+        - FW_BLOCK
+    rate: 3.3333
+  - name: MAC_FLAP
+    enabled: true
+    severity: HIGH
+    description: MAC flap storm {entity} — {count} flaps in {window}s
+    when:
+      field: event
+      op: eq
+      value: MAC_FLAP
+    group_by:
+      - $mac
+    rate: 0.1
+  - name: STP_FLAP
+    enabled: true
+    severity: HIGH
+    description: STP instability — {count} root changes in {window}s
+    when:
+      field: event
+      op: eq
+      value: STP_EVENT
+    rate: 0.06666666666666667
+  - name: ROUTE_CHURN
+    enabled: true
+    severity: MEDIUM
+    description: Route churn — {count} updates in {window}s
+    when:
+      field: event
+      op: in
+      values:
+        - ROUTE_UPDATE
+        - ROUTE_CHANGE
+    rate: 0.2
