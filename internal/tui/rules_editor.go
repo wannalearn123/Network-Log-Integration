@@ -345,13 +345,30 @@ func (e *rulesEditor) view(width, height int) string {
 
 func (e *rulesEditor) viewList(width, height int) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("RULES") + styleDim.Render("  config/rules.yaml — edits apply live after save"))
+	b.WriteString(truncateWidth(styleBrand.Render("◈ RULES")+
+		styleDim.Render("   config/rules.yaml — edits apply live after save"), width-1))
 	b.WriteByte('\n')
-	b.WriteString(styleDim.Render("a add · e edit · space toggle · x delete · p preview · s save · esc back"))
+	hint := "a add · e edit · space toggle · x delete · p preview · s save · esc back"
+	if width < 78 {
+		hint = "a add · e edit · space on/off · x del · p preview · s save"
+	}
+	b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
 	b.WriteByte('\n')
 
-	headers := []string{"", "NAME", "SEV", "RATE", "GROUP", "COUNT"}
-	widths := []int{2, 20, 9, 8, 22, 8}
+	avail := width - 8
+	sets := [][]col{
+		{{"", 2, false}, {"NAME", 17, true}, {"SEVERITY", 9, false},
+			{"RATE", 8, false}, {"GROUP BY", 16, true}, {"COUNT", 8, false}},
+		{{"", 2, false}, {"NAME", 16, true}, {"SEVERITY", 9, false},
+			{"RATE", 8, false}, {"COUNT", 8, false}},
+		{{"", 2, false}, {"NAME", 16, true}, {"SEVERITY", 9, false}},
+	}
+	headers, widths, ok := fitCols(sets, avail)
+	if !ok {
+		headers = []string{"", "NAME"}
+		widths = []int{2, maxIntOf(10, avail-2)}
+	}
+
 	rows := make([]string, 0, len(e.rf.Rules))
 	for i, r := range e.rf.Rules {
 		on := "●"
@@ -366,14 +383,45 @@ func (e *rulesEditor) viewList(width, height int) string {
 		if r.IsDistinct() {
 			count = "distinct"
 		}
-		line := renderRow([]string{on, r.Name, r.Severity, trimFloat(r.Rate), group, count}, widths, false)
-		if i == e.cursor {
-			line = styleSelected.Render(padWidth(on+"  "+r.Name, 22)) +
-				"  " + padWidth(r.Severity, widths[2]) + "  " +
-				padWidth(trimFloat(r.Rate), widths[3]) + "  " +
-				padWidth(group, widths[4]) + "  " + count
+
+		// Build cells from the header names so any column set works.
+		cells := make([]string, len(headers))
+		for j, h := range headers {
+			switch h {
+			case "":
+				cells[j] = on
+			case "NAME":
+				cells[j] = r.Name
+			case "SEVERITY":
+				cells[j] = r.Severity
+			case "RATE":
+				cells[j] = trimFloat(r.Rate)
+			case "GROUP BY":
+				cells[j] = group
+			case "COUNT":
+				cells[j] = count
+			}
 		}
-		rows = append(rows, line)
+
+		if i == e.cursor {
+			rows = append(rows, styledRow(cells, widths, true))
+			continue
+		}
+		// Colour the on/off marker and the severity, keeping alignment.
+		parts := make([]string, len(cells))
+		for j, v := range cells {
+			switch headers[j] {
+			case "":
+				parts[j] = cell(v, styleAccentHi, widths[j])
+			case "SEVERITY":
+				parts[j] = cell(v, severityStyle(r.Severity), widths[j])
+			case "RATE":
+				parts[j] = cell(v, styleDim, widths[j])
+			default:
+				parts[j] = cell(v, styleText, widths[j])
+			}
+		}
+		rows = append(rows, strings.TrimRight(strings.Join(parts, "  "), " "))
 	}
 	if len(rows) == 0 {
 		rows = []string{styleDim.Render("no rules — press a to add one")}
@@ -383,35 +431,45 @@ func (e *rulesEditor) viewList(width, height int) string {
 	if tableHeight < 4 {
 		tableHeight = 4
 	}
-	body, off := renderTable(headers, widths, rows, e.offset, tableHeight)
+	viewport := tableHeight - 2
+	if viewport < 2 {
+		viewport = 2
+	}
+	if e.cursor < e.offset {
+		e.offset = e.cursor
+	}
+	if e.cursor >= e.offset+viewport {
+		e.offset = e.cursor - viewport + 1
+	}
+	body, off := renderTable(headers, widths, rows, e.offset, viewport)
 	e.offset = off
 
-	b.WriteString(styleBorder.Width(width - 2).Render(body))
+	b.WriteString(panel("", body, width-2, tableHeight+2, true))
 	b.WriteByte('\n')
-	b.WriteString(e.statusLine())
+	b.WriteString(e.statusLine(width))
 	return b.String()
 }
 
 func (e *rulesEditor) viewPreview(width int) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("RULE PREVIEW"))
+	b.WriteString(styleBrand.Render("◈ RULE PREVIEW"))
 	b.WriteByte('\n')
 	for _, line := range e.preview {
 		b.WriteString(line)
 		b.WriteByte('\n')
 	}
 	b.WriteString("\n" + styleDim.Render("esc to return"))
-	return styleBorder.Padding(1, 2).Width(minInt(width-4, 100)).Render(b.String())
+	return modalBox(b.String(), minInt(width-6, 102))
 }
 
-func (e *rulesEditor) statusLine() string {
+func (e *rulesEditor) statusLine(width int) string {
 	switch {
 	case e.errText != "":
-		return styleError.Render("error: " + truncateWidth(e.errText, 100))
+		return styleError.Render(truncateWidth("error: "+e.errText, width-1))
 	case e.status != "":
-		return styleAccent.Render(e.status)
+		return styleAccent.Render(truncateWidth(e.status, width-1))
 	default:
-		return styleDim.Render("changes are not written until you press s")
+		return styleDim.Render(truncateWidth("changes are not written until you press s", width-1))
 	}
 }
 

@@ -418,23 +418,43 @@ func (e *parsersEditor) view(width, height int) string {
 
 func (e *parsersEditor) viewList(width, height int) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("PARSERS") + styleDim.Render("  config/parsers.yaml — new log types, no rebuild"))
+	b.WriteString(truncateWidth(styleBrand.Render("◈ PARSERS")+
+		styleDim.Render("   config/parsers.yaml — new log types, no rebuild"), width-1))
 	b.WriteByte('\n')
-	b.WriteString(styleDim.Render("n new · e edit · a add field · i assign keyword · x delete · s save · esc back"))
+	hint := "n new · e edit · a add field · i assign keyword · x delete · s save · esc back"
+	if width < 78 {
+		hint = "n new · e edit · a field · i keyword · s save · esc"
+	}
+	b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
 	b.WriteByte('\n')
 
-	headers := []string{"NAME", "HOST MATCH", "TYPE", "FIELDS"}
-	widths := []int{18, 30, 10, 6}
+	avail := width - 8
+	sets := [][]col{
+		{{"NAME", 16, true}, {"HOST MATCH", 26, true}, {"TYPE", 10, false}, {"FIELDS", 6, false}},
+		{{"NAME", 16, true}, {"HOST MATCH", 20, true}, {"FIELDS", 6, false}},
+		{{"NAME", 16, true}, {"HOST MATCH", 14, true}},
+	}
+	headers, widths, ok := fitCols(sets, avail)
+	if !ok {
+		headers = []string{"NAME"}
+		widths = []int{maxIntOf(10, avail)}
+	}
 	rows := make([]string, 0, len(e.cfg.Devices))
 	for i, d := range e.cfg.Devices {
-		line := renderRow([]string{d.Name, strings.Join(d.HostnameMatch, ","), d.DeviceType,
-			strconv.Itoa(len(d.Fields))}, widths, false)
-		if i == e.cursor {
-			line = styleSelected.Render(padWidth(d.Name, widths[0])) + "  " +
-				padWidth(strings.Join(d.HostnameMatch, ","), widths[1]) + "  " +
-				padWidth(d.DeviceType, widths[2]) + "  " + strconv.Itoa(len(d.Fields))
+		cells := make([]string, len(headers))
+		for j, h := range headers {
+			switch h {
+			case "NAME":
+				cells[j] = d.Name
+			case "HOST MATCH":
+				cells[j] = strings.Join(d.HostnameMatch, ",")
+			case "TYPE":
+				cells[j] = d.DeviceType
+			case "FIELDS":
+				cells[j] = strconv.Itoa(len(d.Fields))
+			}
 		}
-		rows = append(rows, line)
+		rows = append(rows, styledRow(cells, widths, i == e.cursor))
 	}
 	if len(rows) == 0 {
 		rows = []string{styleDim.Render("no device profiles — press n to add one")}
@@ -447,15 +467,15 @@ func (e *parsersEditor) viewList(width, height int) string {
 	body, off := renderTable(headers, widths, rows, e.offset, tableHeight)
 	e.offset = off
 
-	b.WriteString(styleBorder.Width(width - 2).Render(body))
+	b.WriteString(panel("", body, width, tableHeight+4, true))
 	b.WriteByte('\n')
-	b.WriteString(e.statusLine())
+	b.WriteString(e.statusLine(width))
 	return b.String()
 }
 
 func (e *parsersEditor) viewKeywords(width, height int) string {
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("ASSIGN FROM KEYWORD"))
+	b.WriteString(styleBrand.Render("◈ ASSIGN FROM KEYWORD"))
 	b.WriteByte('\n')
 	b.WriteString(styleDim.Render("pick a token found in recent logs, then choose its target column"))
 	b.WriteByte('\n')
@@ -465,7 +485,7 @@ func (e *parsersEditor) viewKeywords(width, height int) string {
 	}
 	if len(e.tokens) == 0 {
 		b.WriteString("\n" + styleDim.Render("esc to return"))
-		return styleBorder.Padding(1, 2).Render(b.String())
+		return modalBox(b.String(), 80)
 	}
 
 	visible := height - 8
@@ -487,16 +507,16 @@ func (e *parsersEditor) viewKeywords(width, height int) string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("\n" + styleDim.Render("enter assign · ↑↓ move · esc cancel"))
-	return styleBorder.Padding(1, 2).Width(minInt(width-4, 90)).Render(b.String())
+	return modalBox(b.String(), minInt(width-6, 92))
 }
 
-func (e *parsersEditor) statusLine() string {
+func (e *parsersEditor) statusLine(width int) string {
 	switch {
 	case e.errText != "":
-		return styleError.Render("error: " + truncateWidth(e.errText, 110))
+		return styleError.Render(truncateWidth("error: "+e.errText, width-1))
 	case e.status != "":
-		return styleAccent.Render(e.status)
+		return styleAccent.Render(truncateWidth(e.status, width-1))
 	default:
-		return styleDim.Render("changes are not written until you press s")
+		return styleDim.Render(truncateWidth("changes are not written until you press s", width-1))
 	}
 }

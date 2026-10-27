@@ -52,7 +52,7 @@ func TestRenderWithRows(t *testing.T) {
 	if !strings.Contains(out, "CRITICAL") {
 		t.Error("anomaly severity not rendered")
 	}
-	if !strings.Contains(out, "x3") {
+	if !strings.Contains(out, "×3") {
 		t.Error("repeat count not rendered")
 	}
 }
@@ -298,7 +298,7 @@ func TestOverviewRendering(t *testing.T) {
 		[]store.TypeCount{{Type: "PORT_SCAN", Count: 3}},
 	)
 	joined := strings.Join(lines, "\n")
-	for _, want := range []string{"Top detection sources", "10.0.0.5", "2001:db8::1", "PORT_SCAN"} {
+	for _, want := range []string{"TOP DETECTION SOURCES", "DETECTIONS BY TYPE", "10.0.0.5", "2001:db8::1", "PORT_SCAN"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("overview missing %q", want)
 		}

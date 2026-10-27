@@ -171,7 +171,7 @@ func (d *detailModal) view(width, height int) string {
 		"",
 	}
 	out := append(head, visible...)
-	return styleBorder.Padding(1, 2).Width(maxWidth).Render(strings.Join(out, "\n"))
+	return modalBox(strings.Join(out, "\n"), maxWidth)
 }
 
 // wrapText breaks s into chunks that fit width, honouring existing newlines.

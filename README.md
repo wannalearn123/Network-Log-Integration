@@ -139,6 +139,12 @@ numeric suffix is added instead. Anomaly rows carry `type` and `entity`
 extracted from the stored `features` document, so they join cleanly against
 the log rows.
 
+The dashboard uses the original black/blue palette (severity colours stay
+red/orange/yellow/green) and adapts to the terminal: side-by-side panes on a
+wide window, stacked panes when narrow, and reduced chrome — no stats row,
+single-line filter — when the window is short. Columns are fitted to the
+available width, so nothing wraps or overflows.
+
 The rules editor supports add, edit, toggle, delete and **preview**: pressing
 `p` dry-runs the rule against the last five minutes and reports how often it
 would have fired. The parser editor's `i` key samples recent raw lines, lists

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,53 +423,67 @@ func (m *Model) viewExportConfirm() string {
 	b.WriteString(fmt.Sprintf("  anomalies: %d rows\n", len(m.anomalies)))
 	b.WriteString(fmt.Sprintf("  directory: %s\n", orDash(m.exportDir)))
 	b.WriteString("\n" + styleDim.Render("enter / y confirm · esc cancel"))
-	return styleBorder.Padding(1, 2).Width(minInt(m.width-6, 70)).Render(b.String())
+	return modalBox(b.String(), minInt(m.width-6, 72))
 }
 
 func (m *Model) viewOverview() string {
-	header := styleTitle.Render("SECURITY OVERVIEW") + styleDim.Render("  r refresh · esc back")
+	header := styleBrand.Render("◈ SECURITY OVERVIEW") +
+		styleDim.Render("   r refresh · esc back")
 	body := strings.Join(m.overview, "\n")
 	if body == "" {
 		body = styleDim.Render("loading…")
 	}
-	return "\n" + header + "\n\n" + body
+	box := modalBox(header+"\n\n"+body, m.width)
+	return "\n" + box
 }
 
 // renderOverview formats the overview panels.
 func renderOverview(sources []store.SourceCount, types []store.TypeCount) []string {
 	var out []string
-
-	out = append(out, styleAccent.Render("Top detection sources"))
-	if len(sources) == 0 {
-		out = append(out, styleDim.Render("  none recorded"))
-	}
-	maxCount := 0
-	for _, s := range sources {
-		if s.Count > maxCount {
-			maxCount = s.Count
+	rows := func(title string, labels []string, counts []int) {
+		out = append(out, styleAccent.Render(title))
+		if len(labels) == 0 {
+			out = append(out, styleDim.Render("   none recorded"))
+			return
+		}
+		max := 0
+		widest := 0
+		for i := range labels {
+			if counts[i] > max {
+				max = counts[i]
+			}
+			if w := len(labels[i]); w > widest {
+				widest = w
+			}
+		}
+		if widest > 26 {
+			widest = 26
+		}
+		for i, label := range labels {
+			bar := styleAccentHi.Render(strings.Repeat("█", barWidth(counts[i], max, 28)))
+			out = append(out, "   "+
+				styleText.Render(padWidth(label, widest))+"  "+
+				styleAccent.Render(padWidth(strconv.Itoa(counts[i]), 5))+" "+
+				bar)
 		}
 	}
-	for _, s := range sources {
-		bar := strings.Repeat("█", barWidth(s.Count, maxCount, 24))
-		out = append(out, fmt.Sprintf("  %-22s %4d  %s",
-			truncateWidth(orDash(s.Source), 22), s.Count, styleAccent.Render(bar)))
-	}
 
-	out = append(out, "", styleAccent.Render("Detections by type"))
-	if len(types) == 0 {
-		out = append(out, styleDim.Render("  none recorded"))
+	labels := make([]string, len(sources))
+	counts := make([]int, len(sources))
+	for i, sc := range sources {
+		labels[i] = orDash(sc.Source)
+		counts[i] = sc.Count
 	}
-	maxType := 0
-	for _, t := range types {
-		if t.Count > maxType {
-			maxType = t.Count
-		}
+	rows("TOP DETECTION SOURCES", labels, counts)
+
+	out = append(out, "")
+	labels = make([]string, len(types))
+	counts = make([]int, len(types))
+	for i, tc := range types {
+		labels[i] = tc.Type
+		counts[i] = tc.Count
 	}
-	for _, t := range types {
-		bar := strings.Repeat("█", barWidth(t.Count, maxType, 24))
-		out = append(out, fmt.Sprintf("  %-22s %4d  %s",
-			truncateWidth(t.Type, 22), t.Count, styleAccent.Render(bar)))
-	}
+	rows("DETECTIONS BY TYPE", labels, counts)
 	return out
 }
 
@@ -496,9 +511,9 @@ var _ = lipgloss.NewStyle
 // newSearchInput builds the filter box.
 func newSearchInput() textinput.Model {
 	ti := textinput.New()
-	ti.Placeholder = "filter host / event / ip / mac"
+	ti.Placeholder = "Search logs & anomalies…"
 	ti.CharLimit = 64
-	ti.Prompt = "/ "
+	ti.Prompt = ""
 	return ti
 }
 
@@ -509,6 +524,33 @@ func orDash(s string) string {
 	return s
 }
 
+// layout decides the responsive arrangement for the current width.
+type layout struct {
+	stacked  bool // narrow: anomalies below logs
+	wideCols bool // wide: show dst/proto columns
+	logsW    int
+	anomsW   int
+}
+
+func (m *Model) layout() layout {
+	l := layout{}
+	l.wideCols = m.width >= 110
+	if m.width < 76 {
+		l.stacked = true
+		return l
+	}
+	l.logsW = m.width * 3 / 5
+	if l.logsW < 44 {
+		l.logsW = 44
+	}
+	l.anomsW = m.width - l.logsW - 2
+	if l.anomsW < 26 {
+		l.anomsW = 26
+		l.logsW = m.width - l.anomsW - 2
+	}
+	return l
+}
+
 func (m *Model) viewDashboard() string {
 	if m.width <= 0 {
 		m.width = 80
@@ -516,76 +558,172 @@ func (m *Model) viewDashboard() string {
 	if m.height <= 0 {
 		m.height = 24
 	}
-	var b strings.Builder
 
-	b.WriteString(m.viewHeader())
-	b.WriteByte('\n')
-	b.WriteString(m.viewStats())
-	b.WriteByte('\n')
-	b.WriteString(m.search.View())
-	b.WriteByte('\n')
-
-	bodyHeight := m.height - 9
-	if bodyHeight < 6 {
-		bodyHeight = 6
+	// Chrome adapts to the terminal height: on a short terminal the stats row
+	// and the bordered search box are dropped so the panes stay usable.
+	compact := m.height < 20
+	head := []string{m.viewHeader()}
+	if !compact {
+		head = append(head, m.viewStats())
 	}
-	tableHeight := bodyHeight - 2
+	head = append(head, m.viewSearchLines(compact)...)
 
-	logWidth := m.width * 3 / 5
-	if logWidth < 40 {
-		logWidth = 40
-	}
-	anomWidth := m.width - logWidth - 4
-	if anomWidth < 24 {
-		anomWidth = 24
+	bodyH := m.height - len(head) - 1 // one line reserved for the footer
+	if bodyH < 5 {
+		bodyH = 5
 	}
 
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,
-		m.viewLogs(logWidth, tableHeight), "  ", m.viewAnomalies(anomWidth, tableHeight)))
-	b.WriteString("\n")
-	b.WriteString(m.viewFooter())
-	return b.String()
+	var parts []string
+	parts = append(parts, head...)
+
+	l := m.layout()
+	if l.stacked && bodyH >= 10 {
+		logH := bodyH * 3 / 5
+		anomH := bodyH - logH
+		if logH < 5 {
+			logH = 5
+			anomH = bodyH - logH
+		}
+		if anomH < 5 {
+			anomH = 5
+			logH = bodyH - anomH
+		}
+		if logH < 5 {
+			logH = 5
+		}
+		parts = append(parts, m.viewLogs(m.width-2, logH))
+		if anomH >= 5 {
+			parts = append(parts, m.viewAnomalies(m.width-2, anomH))
+		}
+	} else if l.stacked {
+		// Too short to stack: show the log stream alone.
+		parts = append(parts, m.viewLogs(m.width-2, bodyH))
+	} else {
+		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Top,
+			m.viewLogs(l.logsW, bodyH), " ", m.viewAnomalies(l.anomsW, bodyH)))
+	}
+
+	parts = append(parts, m.viewFooter())
+	return strings.Join(parts, "\n")
 }
 
+// viewSearchLines renders the filter box: a bordered box when tall enough,
+// otherwise a single line so the panes keep their space.
+func (m *Model) viewSearchLines(compact bool) []string {
+	label := styleAccentHi.Render("/ ")
+	body := label + m.search.View()
+	if compact {
+		return []string{body}
+	}
+	if m.searching {
+		return strings.Split(stylePanelActive.Width(m.width-4).
+			Padding(0, 1).Render(body), "\n")
+	}
+	return strings.Split(styleDim.Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Width(m.width-4).Padding(0, 1).Render(body), "\n")
+}
+
+// viewHeader is the filled brand bar.
 func (m *Model) viewHeader() string {
-	left := styleTitle.Render("SISKAMLAN") + styleDim.Render("  LAN security monitoring")
-	state := styleOK.Render("● live")
+	title := "◈ SISKAMLAN"
+	subtitle := "LAN security monitoring"
+	left := title
+	if m.width >= 70 {
+		left = title + "  " + subtitle
+	}
+
+	statusText := "● LIVE"
+	statusStyle := lipgloss.NewStyle().Foreground(ColorBg).Background(ColorPrimary).Bold(true)
 	if m.paused {
-		state = styleDim.Render("❚❚ paused")
+		statusText = "❚❚ PAUSED"
+		statusStyle = lipgloss.NewStyle().Foreground(ColorBg).Background(ColorHigh).Bold(true)
 	}
 	if m.lastErr != nil {
-		state = styleError.Render("! " + truncateWidth(m.lastErr.Error(), 50))
+		statusText = "! " + truncateWidth(m.lastErr.Error(), 40)
+		statusStyle = lipgloss.NewStyle().Foreground(ColorBg).Background(ColorCritical).Bold(true)
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(state)
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(statusText) - 2
 	if gap < 1 {
 		gap = 1
 	}
-	return left + strings.Repeat(" ", gap) + state
+	return styleHeaderBar.Render(left) +
+		styleHeaderBar.Render(strings.Repeat(" ", gap)) +
+		statusStyle.Render(" "+statusText+" ")
 }
 
+// viewStats renders the aggregate counters as chips.
+//
+// Chips are added in priority order and dropped once they no longer fit, so
+// the line never wraps on a narrow terminal.
 func (m *Model) viewStats() string {
 	s := m.stats
-	cells := []string{
-		fmt.Sprintf("logs %d", s.TotalLogs),
-		fmt.Sprintf("1h %d", s.LogsLastHour),
-		fmt.Sprintf("devices %d", s.ActiveDevices),
-		fmt.Sprintf("anomalies %d", s.TotalAnomalies),
-		severityStyle("CRITICAL").Render(fmt.Sprintf("crit %d", s.Critical)),
-		severityStyle("HIGH").Render(fmt.Sprintf("high %d", s.High)),
-		severityStyle("MEDIUM").Render(fmt.Sprintf("med %d", s.Medium)),
-		severityStyle("LOW").Render(fmt.Sprintf("low %d", s.Low)),
+	candidates := []string{
+		styleChip.Render("Logs " + styleAccentHi.Render(commas(s.TotalLogs))),
+		styleChip.Render("1h " + styleAccentHi.Render(commas(s.LogsLastHour))),
+		styleChip.Render("Dev " + styleAccentHi.Render(commas(s.ActiveDevices))),
+		styleChip.Render("Anom " + styleAccentHi.Render(commas(s.TotalAnomalies))),
+		severityStyle("CRITICAL").Render("● " + commas(s.Critical)),
+		severityStyle("HIGH").Render("◆ " + commas(s.High)),
+		severityStyle("MEDIUM").Render("▲ " + commas(s.Medium)),
+		severityStyle("LOW").Render("▽ " + commas(s.Low)),
 	}
-	return strings.Join(cells, styleDim.Render("  │  "))
+
+	var kept []string
+	width := 0
+	for _, c := range candidates {
+		w := lipgloss.Width(c)
+		if len(kept) > 0 && width+1+w > m.width {
+			continue
+		}
+		if len(kept) == 0 && w > m.width {
+			continue
+		}
+		kept = append(kept, c)
+		width += w
+		if len(kept) > 1 {
+			width++
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 func (m *Model) viewLogs(width, height int) string {
-	wide := width > 90
-	widths := []int{8, 14, 9, 15, 7, 6}
-	headers := []string{"TIME", "HOST", "DEVICE", "EVENT", "SRC", "PORT"}
-	if wide {
-		widths = []int{8, 20, 10, 17, 16, 16, 6, 6}
-		headers = []string{"TIME", "HOST", "DEVICE", "EVENT", "SRC", "DST", "PROTO", "PORT"}
+	// Panel content width: border (2) + horizontal padding (2), plus slack.
+	avail := width - 6
+
+	sets := [][]col{
+		{ // widest: everything
+			{"TIME", 8, false}, {"HOST", 16, true}, {"DEVICE", 10, false},
+			{"EVENT", 14, true}, {"SRC IP", 15, true}, {"ENTITY", 15, true},
+			{"PROTO", 5, false}, {"PORT", 5, false},
+		},
+		{ // no entity/proto
+			{"TIME", 8, false}, {"HOST", 14, true}, {"DEVICE", 9, false},
+			{"EVENT", 13, true}, {"SRC IP", 14, true}, {"PORT", 5, false},
+		},
+		{ // compact, still shows the source
+			{"TIME", 8, false}, {"HOST", 14, true}, {"EVENT", 12, true},
+			{"SRC IP", 13, true}, {"PORT", 5, false},
+		},
+		{ // tighter compact
+			{"TIME", 8, false}, {"HOST", 12, true}, {"EVENT", 12, true},
+			{"PORT", 5, false},
+		},
+		{ // minimal
+			{"TIME", 8, false}, {"EVENT", 12, true},
+		},
 	}
+	headers, widths, ok := fitCols(sets, avail)
+	if !ok {
+		headers = []string{"TIME", "EVENT"}
+		widths = []int{8, maxIntOf(6, avail-10)}
+	}
+	ncols := len(widths)
+	wide := ncols == 8
+	mid := ncols == 6
+	five := ncols == 5
 
 	rows := make([]string, 0, len(m.logs))
 	for i, r := range m.logs {
@@ -593,25 +731,55 @@ func (m *Model) viewLogs(width, height int) string {
 		if r.SrcIP != nil {
 			src = *r.SrcIP
 		}
-		dst := ""
-		if r.DstIP != nil {
-			dst = *r.DstIP
+		entity := ""
+		if r.MAC != "" {
+			entity = r.MAC
+		} else if r.ClientMAC != "" {
+			entity = r.ClientMAC
+		} else if r.DstIP != nil {
+			entity = *r.DstIP
 		}
 		port := "—"
 		if r.DstPort != nil {
-			port = fmt.Sprint(*r.DstPort)
+			port = strconv.Itoa(*r.DstPort)
 		}
+
+		// EVENT sits at index 3 for the 6- and 8-column sets, index 2 for the
+		// 4/5-column sets, and index 1 for the minimal pair.
+		evIdx := 3
+		switch ncols {
+		case 2:
+			evIdx = 1
+		case 4, 5:
+			evIdx = 2
+		}
+		evW := widths[evIdx]
+		ev := eventStyle(r.Event).Render(padWidth(r.Event, evW))
+
 		var line string
-		if wide {
-			line = renderRow([]string{
-				r.Timestamp.Format("15:04:05"), r.Hostname, r.DeviceType, r.Event,
-				src, dst, r.Proto, port,
-			}, widths, false)
-		} else {
-			line = renderRow([]string{
-				r.Timestamp.Format("15:04:05"), r.Hostname, r.DeviceType, r.Event,
-				src, port,
-			}, widths, false)
+		switch {
+		case wide:
+			line = styleDim.Render(padWidth(r.Timestamp.Format("15:04:05"), widths[0])) + "  " +
+				padWidth(r.Hostname, widths[1]) + "  " +
+				padWidth(deviceIcon(r.DeviceType)+" "+r.DeviceType, widths[2]) + "  " +
+				ev + "  " + padWidth(src, widths[4]) + "  " +
+				padWidth(entity, widths[5]) + "  " +
+				padWidth(r.Proto, widths[6]) + "  " + padWidth(port, widths[7])
+		case mid:
+			line = styleDim.Render(padWidth(r.Timestamp.Format("15:04:05"), widths[0])) + "  " +
+				padWidth(r.Hostname, widths[1]) + "  " +
+				padWidth(deviceIcon(r.DeviceType)+" "+r.DeviceType, widths[2]) + "  " +
+				ev + "  " + padWidth(src, widths[4]) + "  " + padWidth(port, widths[5])
+		case five:
+			line = styleDim.Render(padWidth(r.Timestamp.Format("15:04:05"), widths[0])) + "  " +
+				padWidth(r.Hostname, widths[1]) + "  " +
+				ev + "  " + padWidth(src, widths[3]) + "  " + padWidth(port, widths[4])
+		case ncols == 4:
+			line = styleDim.Render(padWidth(r.Timestamp.Format("15:04:05"), widths[0])) + "  " +
+				padWidth(r.Hostname, widths[1]) + "  " +
+				ev + "  " + padWidth(port, widths[3])
+		default:
+			line = styleDim.Render(padWidth(r.Timestamp.Format("15:04:05"), widths[0])) + "  " + ev
 		}
 		if i == m.logOffset {
 			line = styleSelected.Render(strings.TrimRight(line, " "))
@@ -622,42 +790,67 @@ func (m *Model) viewLogs(width, height int) string {
 		rows = []string{styleDim.Render("no log rows match")}
 	}
 
-	title := " LOG STREAM "
-	if m.focusLogs {
-		title = styleTitle.Render(" LOG STREAM ")
+	// Panel lines = border 2 + title 1 + header 1 + rule 1 + viewport.
+	viewport := height - 5
+	if viewport < 1 {
+		viewport = 1
 	}
-	// Keep the selection visible without moving it.
 	if m.logOffset < m.logTop {
 		m.logTop = m.logOffset
 	}
-	if m.logOffset >= m.logTop+height {
-		m.logTop = m.logOffset - height + 1
+	if m.logOffset >= m.logTop+viewport {
+		m.logTop = m.logOffset - viewport + 1
 	}
-	body, off := renderTable(headers, widths, rows, m.logTop, height)
+	body, off := renderTable(headers, widths, rows, m.logTop, viewport)
 	m.logTop = off
 
-	inner := lipgloss.NewStyle().Width(width).Height(height + 1).Render(body)
-	return styleBorder.Width(width).Render(title + "\n" + inner)
+	title := "  LOG STREAM "
+	if m.focusLogs {
+		title = "▸ LOG STREAM "
+	}
+	return panel(title, body, width, height, m.focusLogs)
 }
 
 func (m *Model) viewAnomalies(width, height int) string {
-	timeW, sevW := 9, 8
-	descW := width - timeW - sevW - 8
-	if descW < 12 {
-		descW = 12
+	inner := width - 6
+	sevW := 10
+	// Below ~34 cells the timestamp is dropped to keep the detection readable.
+	showTime := inner >= 34
+	var widths []int
+	var headers []string
+	descW := 0
+	if showTime {
+		timeW := 8
+		descW = inner - timeW - sevW - 4
+		if descW < 10 {
+			descW = 10
+		}
+		widths = []int{timeW, sevW, descW}
+		headers = []string{"TIME", "SEVERITY", "DETECTION"}
+	} else {
+		descW = inner - sevW - 2
+		if descW < 8 {
+			descW = 8
+		}
+		widths = []int{sevW, descW}
+		headers = []string{"SEVERITY", "DETECTION"}
 	}
-	widths := []int{timeW, sevW, descW}
-	headers := []string{"TIME", "SEV", "DETECTION"}
 
 	rows := make([]string, 0, len(m.anomalies))
 	for i, a := range m.anomalies {
-		sev := severityStyle(a.Severity).Render(padWidth(a.Severity, widths[1]))
+		sev := severityStyle(a.Severity).Render(
+			padWidth(severityIcon(a.Severity)+" "+a.Severity, sevW))
 		desc := strings.TrimPrefix(a.Description, "[RULE] ")
 		if a.RepeatCount > 1 {
-			desc = fmt.Sprintf("%s (x%d)", desc, a.RepeatCount)
+			desc = fmt.Sprintf("%s ×%d", desc, a.RepeatCount)
 		}
-		line := padWidth(a.Timestamp.Format("15:04:05"), widths[0]) + "  " +
-			sev + "  " + padWidth(desc, widths[2])
+		var line string
+		if showTime {
+			line = styleDim.Render(padWidth(a.Timestamp.Format("15:04:05"), widths[0])) + "  " +
+				sev + "  " + padWidth(desc, descW)
+		} else {
+			line = sev + "  " + padWidth(desc, descW)
+		}
 		if i == m.anomOffset {
 			line = styleSelected.Render(strings.TrimRight(line, " "))
 		}
@@ -667,60 +860,74 @@ func (m *Model) viewAnomalies(width, height int) string {
 		rows = []string{styleDim.Render("no detections")}
 	}
 
-	title := " ANOMALIES "
-	if !m.focusLogs {
-		title = styleTitle.Render(" ANOMALIES ")
+	viewport := height - 5
+	if viewport < 1 {
+		viewport = 1
 	}
 	if m.anomOffset < m.anomTop {
 		m.anomTop = m.anomOffset
 	}
-	if m.anomOffset >= m.anomTop+height {
-		m.anomTop = m.anomOffset - height + 1
+	if m.anomOffset >= m.anomTop+viewport {
+		m.anomTop = m.anomOffset - viewport + 1
 	}
-	body, off := renderTable(headers, widths, rows, m.anomTop, height)
+	body, off := renderTable(headers, widths, rows, m.anomTop, viewport)
 	m.anomTop = off
 
-	inner := lipgloss.NewStyle().Width(width).Height(height + 1).Render(body)
-	return styleBorder.Width(width).Render(title + "\n" + inner)
+	title := "  ANOMALIES "
+	if !m.focusLogs {
+		title = "▸ ANOMALIES "
+	}
+	return panel(title, body, width, height, !m.focusLogs)
 }
 
+// viewFooter renders the key hints.
 func (m *Model) viewFooter() string {
-	keys := "q quit · p pause · / search · enter detail · o overview · e export · R rules · P parsers · ? help"
-	if m.notify != "" {
-		keys = styleAccent.Render(m.notify) + styleDim.Render(" · ") + keys
+	var keys string
+	if m.width >= 100 {
+		keys = "q quit │ p pause │ / search │ ↑↓ move │ tab focus │ ⏎ detail │ o overview │ e export │ R rules │ P parsers │ ? help"
+	} else {
+		keys = "q quit │ p pause │ / search │ tab focus │ ⏎ detail │ R rules │ ? help"
 	}
-	return styleHelp.Render(keys)
+	if m.notify != "" {
+		keys = styleAccentHi.Render(m.notify) + styleDim.Render(" │ ") + keys
+	}
+	return styleFooterBar.Render(truncateWidth(keys, m.width))
 }
 
 func (m *Model) viewHelp() string {
+	section := func(name string) string { return "\n" + styleAccent.Render(name) }
+	key := func(k, desc string) string {
+		return "  " + styleAccentHi.Render(padWidth(k, 13)) + styleText.Render(desc)
+	}
 	lines := []string{
-		styleTitle.Render("SISKAMLAN — keyboard reference"),
-		"",
-		styleAccent.Render("Dashboard"),
-		"  q            quit",
-		"  p            pause / resume live refresh",
-		"  /            filter (host, event, ip, mac, ssid, ifname)",
-		"  esc          clear filter",
-		"  ↑ ↓ / j k    move the selection",
-		"  tab          switch focus between logs and anomalies",
-		"  enter        open the selected row's detail",
-		"  o            security overview",
-		"  e            export visible rows to CSV",
-		"  g            jump to the top of the focused pane",
-		"  r            refresh now",
-		"",
-		styleAccent.Render("Configuration (live, no restart)"),
-		"  R            rules editor",
-		"  P            parser editor",
-		"",
-		styleAccent.Render("Rules editor"),
-		"  a add · e edit · space toggle · x delete · p preview · s save · esc back",
-		"",
-		styleAccent.Render("Parser editor"),
-		"  n new device · a add field · i assign keyword · s save · esc back",
+		styleBrand.Render("◈ SISKAMLAN") + styleDim.Render("  keyboard reference"),
+		section("Dashboard"),
+		key("q", "quit the process"),
+		key("p", "pause / resume live refresh"),
+		key("/", "filter host, event, IP, MAC, SSID, interface"),
+		key("esc", "clear the filter"),
+		key("↑ ↓ j k", "move the selection"),
+		key("tab", "switch focus between logs and anomalies"),
+		key("enter", "open the selected row's detail"),
+		key("o", "security overview"),
+		key("e", "export visible rows to CSV"),
+		key("g", "jump to the top"),
+		key("r", "refresh now"),
+		section("Configuration (live, no restart)"),
+		key("R", "rules editor"),
+		key("P", "parser editor"),
+		section("Rules editor"),
+		key("a e x", "add · edit · delete"),
+		key("space", "enable / disable"),
+		key("p", "preview against the last 5 minutes"),
+		key("s", "save and apply"),
+		section("Parser editor"),
+		key("n e x", "new · edit · delete device"),
+		key("a", "add a field assignment"),
+		key("i", "assign from a keyword in recent logs"),
+		key("s", "save and apply"),
 		"",
 		styleDim.Render("Press b or ? to return to the dashboard."),
 	}
-	box := styleBorder.Padding(1, 2).Render(strings.Join(lines, "\n"))
-	return "\n" + box
+	return "\n" + modalBox(strings.Join(lines, "\n"), m.width)
 }

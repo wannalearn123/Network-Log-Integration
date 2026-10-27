@@ -202,12 +202,5 @@ func (f *form) view(width int) string {
 		b.WriteString("\n" + styleError.Render(f.errText))
 		b.WriteByte('\n')
 	}
-	return styleBorder.Padding(1, 2).Width(minInt(width-4, 72)).Render(b.String())
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	return modalBox(b.String(), 74)
 }
