@@ -206,6 +206,12 @@ func makeAnomaly(hit rules.Hit, _ int, window int) store.Anomaly {
 	}
 }
 
+// EntryFromStore converts a database row back into a parser entry for
+// detection and previewing.
+func EntryFromStore(r *store.LogEntry) *parser.Entry {
+	return fromStore(r)
+}
+
 // fromStore converts a database row back into a parser entry for detection.
 func fromStore(r *store.LogEntry) *parser.Entry {
 	deref := func(p *int) *int { return p }

@@ -11,12 +11,15 @@ import (
 	"path/filepath"
 	"syscall"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"siskamlan/internal/config"
 	"siskamlan/internal/notify"
 	"siskamlan/internal/parser"
 	"siskamlan/internal/pipeline"
 	"siskamlan/internal/rules"
 	"siskamlan/internal/store"
+	"siskamlan/internal/tui"
 )
 
 const usage = `siskamlan — LAN security monitoring
@@ -123,15 +126,14 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 		StateFile: filepath.Join(projectRoot, "data", ".pipeline", "offsets.json"),
 		Notifier:  notify.New(),
 	})
-	return &runtime{store: s, supervisor: sup}, nil
+	return &runtime{store: s, supervisor: sup, paths: paths}, nil
 }
 
 // runtime bundles the long-lived components built for a run.
 type runtime struct {
 	store      *store.Store
 	supervisor *pipeline.Supervisor
-
-	stopTUI context.CancelFunc
+	paths      config.Paths
 }
 
 // seedIfMissing writes template when path does not exist yet, preserving the
@@ -157,11 +159,65 @@ func runPipeline(ctx context.Context) error {
 }
 
 func runTUI(ctx context.Context) error {
-	log.Print("tui: not implemented yet")
-	return nil
+	redirectLogs()
+	rt, err := buildRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	defer rt.store.Close()
+	return rt.runDashboard(ctx, false)
 }
 
 func runAll(ctx context.Context) error {
-	// The dashboard is added in a later phase; for now run the pipeline.
-	return runPipeline(ctx)
+	redirectLogs()
+	rt, err := buildRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	defer rt.store.Close()
+	return rt.runDashboard(ctx, true)
+}
+
+// runDashboard runs the pipeline (when withPipeline) and the dashboard in one
+// process. Closing the dashboard cancels the pipeline.
+func (r *runtime) runDashboard(ctx context.Context, withPipeline bool) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if withPipeline {
+		done := make(chan error, 1)
+		go func() {
+			done <- r.supervisor.Run(ctx)
+		}()
+		defer func() {
+			cancel()
+			<-done
+		}()
+	}
+
+	model := tui.New(tui.Options{
+		Store:       r.store,
+		RulesPath:   r.paths.Rules,
+		ParsersPath: r.paths.Parsers,
+	})
+	program := tea.NewProgram(model, tea.WithAltScreen())
+	if _, err := program.Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// redirectLogs sends the standard logger to logs/orchestrator.log so the
+// dashboard stays readable.
+func redirectLogs() {
+	dir := filepath.Join(projectRoot, "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "orchestrator.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(f)
 }
