@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -19,6 +21,8 @@ import (
 	"siskamlan/internal/pipeline"
 	"siskamlan/internal/rules"
 	"siskamlan/internal/store"
+	"siskamlan/internal/telegramauth"
+	"siskamlan/internal/telegrambot"
 	"siskamlan/internal/tui"
 )
 
@@ -140,15 +144,17 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 		return nil, err
 	}
 
+	auth := telegramauth.Open(filepath.Join(projectRoot, "data", "telegram_auth.json"))
+
 	sup := pipeline.New(pipeline.Config{
 		Store:     s,
 		Rules:     cfgs.rules,
 		Parsers:   cfgs.parsers,
 		SyslogDir: filepath.Join(projectRoot, "data", "syslog"),
 		StateFile: filepath.Join(projectRoot, "data", ".pipeline", "offsets.json"),
-		Notifier:  notify.New(),
+		Notifier:  notify.New(auth.AuthorizedIDs),
 	})
-	return &runtime{store: s, supervisor: sup, paths: cfgs.paths}, nil
+	return &runtime{store: s, supervisor: sup, paths: cfgs.paths, auth: auth}, nil
 }
 
 // runtime bundles the long-lived components built for a run.
@@ -156,6 +162,52 @@ type runtime struct {
 	store      *store.Store
 	supervisor *pipeline.Supervisor
 	paths      config.Paths
+	auth       *telegramauth.Store
+}
+
+// startBot runs the Telegram command loop until ctx ends. It does nothing
+// unless NOTIFY_TELEGRAM is on and a token is set, so an unconfigured install
+// behaves exactly as before.
+func (r *runtime) startBot(ctx context.Context) {
+	token := strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
+	if token == "" || !notify.New(nil).Enabled() {
+		return
+	}
+	bot, err := telegrambot.New(telegrambot.Options{
+		Token:   token,
+		APIBase: os.Getenv("TELEGRAM_API_BASE"),
+		Auth:    r.auth,
+		Status:  r.statusSnapshot,
+	})
+	if err != nil {
+		log.Printf("telegram: bot disabled: %v", err)
+		return
+	}
+	go func() {
+		if err := bot.Run(ctx); err != nil {
+			log.Printf("telegram: bot stopped: %v", err)
+		}
+	}()
+}
+
+// statusSnapshot gathers what /status reports. Each probe has its own short
+// timeout so a sick database cannot hang the reply.
+func (r *runtime) statusSnapshot(ctx context.Context) telegrambot.Status {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	st := telegrambot.Status{PipelineRunning: r.supervisor != nil}
+	last, err := r.store.LastLogTime(cctx)
+	if err != nil {
+		st.DBError = err.Error()
+		return st
+	}
+	st.DBReachable = true
+	st.LastIngest = last
+	if h, d, err := r.store.AnomalyCounts(cctx); err == nil {
+		st.Anomalies1h, st.Anomalies24h = h, d
+	}
+	return st
 }
 
 // seedIfMissing writes template when path does not exist yet, preserving the
@@ -175,6 +227,7 @@ func runPipeline(ctx context.Context) error {
 		return err
 	}
 	defer rt.store.Close()
+	rt.startBot(ctx)
 
 	log.Printf("pipeline starting — tailing %s", filepath.Join(projectRoot, "data", "syslog"))
 	return rt.supervisor.Run(ctx)
@@ -197,6 +250,7 @@ func runAll(ctx context.Context) error {
 		return err
 	}
 	defer rt.store.Close()
+	rt.startBot(ctx)
 	return rt.runDashboard(ctx, true)
 }
 
@@ -222,6 +276,7 @@ func (r *runtime) runDashboard(ctx context.Context, withPipeline bool) error {
 		RulesPath:   r.paths.Rules,
 		ParsersPath: r.paths.Parsers,
 		ExportDir:   filepath.Join(projectRoot, "exports"),
+		Auth:        r.auth,
 	})
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {

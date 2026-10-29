@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +19,7 @@ func newTestNotifier(t *testing.T, server *httptest.Server) *Notifier {
 		enabled:     true,
 		minSev:      "HIGH",
 		token:       "test-token",
-		chatIDs:     []string{"123"},
+		recipients:  func() ([]string, error) { return []string{"123"}, nil },
 		apiBase:     server.URL,
 		maxAttempts: 2,
 		backoff:     func(int) time.Duration { return time.Millisecond },
@@ -170,19 +171,44 @@ func TestEnabledParsing(t *testing.T) {
 	}
 }
 
-// TestNewReadsChatIDs checks comma-separated chat IDs are split and trimmed.
-func TestNewReadsChatIDs(t *testing.T) {
-	t.Setenv("TELEGRAM_CHAT_ID", " 111 , 222 ,,333 ")
+// TestNewReadsEnabledAndToken checks the master switch and token are read.
+func TestNewReadsEnabledAndToken(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "tok")
 	t.Setenv("NOTIFY_TELEGRAM", "1")
-	n := New()
-	if len(n.chatIDs) != 3 {
-		t.Fatalf("chat IDs = %v, want 3", n.chatIDs)
-	}
-	if n.chatIDs[0] != "111" || n.chatIDs[2] != "333" {
-		t.Fatalf("chat IDs not trimmed: %v", n.chatIDs)
+	n := New(func() ([]string, error) { return nil, nil })
+	if n.token != "tok" {
+		t.Fatalf("token = %q", n.token)
 	}
 	if !n.Enabled() {
 		t.Fatal("notifier should be enabled")
+	}
+}
+
+// TestRecipientsAreReadPerSend checks a chat approved after startup gets the
+// next alert without a restart.
+func TestRecipientsAreReadPerSend(t *testing.T) {
+	var hits int32
+	srv := okServer(t, &hits)
+	defer srv.Close()
+
+	var mu sync.Mutex
+	chats := []string{}
+	n := newTestNotifier(t, srv)
+	n.recipients = func() ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), chats...), nil
+	}
+	if n.sendAll("first") {
+		t.Fatal("delivered with no authorized chats")
+	}
+	mu.Lock()
+	chats = []string{"777"}
+	mu.Unlock()
+	if !n.sendAll("second") {
+		t.Fatal("did not deliver after a chat was authorized")
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("requests = %d, want 1", hits)
 	}
 }

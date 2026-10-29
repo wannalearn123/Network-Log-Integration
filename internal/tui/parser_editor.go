@@ -1,8 +1,9 @@
 package tui
 
 import (
-	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -42,10 +43,19 @@ type parsersEditor struct {
 	editDevice int // device index, or -1 when adding
 	editField  int // field index, or -1 when adding
 
+	// selectedFile is a path to a .log file in data/syslog/
+	// when set, loadKeywords reads from that file instead of the DB.
+	selectedFile string
+
 	rawLines []string
 	tokens   []keyword
 	tokCur   int
 	tokErr   string
+
+	// sample holds the newest raw lines, shown on the list screen so the
+	// operator can see what is arriving before writing a profile.
+	sample    []string
+	sampleErr string
 }
 
 func newParsersEditor(path string, store *store.Store) *parsersEditor {
@@ -61,9 +71,39 @@ func (e *parsersEditor) open() {
 		return
 	}
 	e.refreshFromFile()
+	e.loadFileSample()
 	e.mode = modeList
 	e.status = ""
 	e.errText = ""
+}
+
+// loadFileSample reads the tail (3-5 lines) of the selected file in
+// data/syslog/. If no file is selected it shows nothing yet.
+func (e *parsersEditor) loadFileSample() {
+	e.sample = nil
+	e.sampleErr = ""
+	if e.selectedFile == "" {
+		return
+	}
+	raw, err := os.ReadFile(e.selectedFile)
+	if err != nil {
+		e.sampleErr = err.Error()
+		return
+	}
+	lines := strings.Split(string(raw), "\n")
+	start := 0
+	if len(lines) > 3 {
+		start = len(lines) - 3 // take last 3 lines (tail)
+	}
+	for i := start; i < len(lines) && len(e.sample) < 5; i++ {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			e.sample = append(e.sample, line)
+		}
+	}
+	if len(e.sample) == 0 {
+		e.sampleErr = "file is empty"
+	}
 }
 
 func (e *parsersEditor) refreshFromFile() {
@@ -95,21 +135,46 @@ func (e *parsersEditor) update(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (e *parsersEditor) updateList(msg tea.KeyMsg) tea.Cmd {
+	files, _ := filepath.Glob("data/syslog/*.log")
+	if len(files) == 0 {
+		files, _ = filepath.Glob("/mnt/DATA/PROJECT/Monitoring System.bak/data/syslog/*.log")
+	}
 	switch msg.String() {
 	case "esc", "b":
+		if e.selectedFile != "" {
+			e.selectedFile = ""
+			e.loadFileSample()
+			e.cursor = 0
+			return nil
+		}
 		return func() tea.Msg { return closeEditorMsg{} }
 	case "up", "k":
 		if e.cursor > 0 {
 			e.cursor--
 		}
 	case "down", "j":
-		if e.cursor < len(e.cfg.Devices)-1 {
+		if e.selectedFile == "" && len(files) > 0 {
+			if e.cursor < len(files)-1 {
+				e.cursor++
+			}
+		} else if e.cursor < len(e.cfg.Devices)-1 {
 			e.cursor++
 		}
 	case "n":
 		e.startDeviceForm(-1)
 	case "e", "enter":
-		if e.cursor < len(e.cfg.Devices) {
+		if e.selectedFile == "" && len(files) > 0 {
+			// Select a file from the list
+			e.selectedFile = files[e.cursor]
+			e.loadFileSample()
+			e.mode = modeList
+			e.status = "selected file " + filepath.Base(e.selectedFile) + " (tail shown)"
+		} else if e.selectedFile != "" && e.cursor < len(e.cfg.Devices) {
+			e.startDeviceForm(e.cursor)
+		} else if e.selectedFile != "" {
+			// No device to edit; move cursor
+			e.cursor++
+		} else if e.cursor < len(e.cfg.Devices) {
 			e.startDeviceForm(e.cursor)
 		}
 	case "x":
@@ -129,6 +194,9 @@ func (e *parsersEditor) updateList(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "i":
 		e.loadKeywords()
+	case "r":
+		e.open()
+		e.status = "reloaded " + time.Now().Format("15:04:05")
 	case "s":
 		e.save()
 	}
@@ -146,12 +214,15 @@ func (e *parsersEditor) startDeviceForm(idx int) {
 		dt = "other"
 	}
 	e.form = newForm("Device profile", []formField{
-		{label: "name", kind: kindText, value: orDefault(d.Name, "new-device")},
+		{label: "name", kind: kindText, value: orDefault(d.Name, "new-device"),
+			help: "a label only — used in messages, not for matching"},
 		{label: "hostname_match", kind: kindList, value: strings.Join(d.HostnameMatch, ", "),
-			help: "regex list, comma-separated, matched against the hostname"},
+			help: "regex list, comma-separated, tested against the hostname; first match wins"},
 		{label: "device_type", kind: kindEnum, value: dt,
-			options: []string{"other", "router", "switch", "ap", "firewall", "syslog"}},
+			options: []string{"other", "router", "switch", "ap", "firewall", "syslog"},
+			help:    "sets the device_type column and enables built-in heuristics"},
 	})
+	e.form.subtitle = "A profile only maps raw log tokens onto columns; add those with a, or pick one with i."
 	e.mode = modeForm
 }
 
@@ -167,17 +238,23 @@ func (e *parsersEditor) startFieldForm(deviceIdx, fieldIdx int) {
 }
 
 func (e *parsersEditor) fieldForm(f parser.FieldRule) *form {
-	return newForm("Field assignment", []formField{
-		{label: "target", kind: kindEnum, value: orDefault(f.Target, "src_ip"), options: parser.TargetColumns},
-		{label: "strategy", kind: kindEnum, value: orDefault(f.Strategy, "kv"), options: parser.Strategies},
+	fm := newForm("Field assignment", []formField{
+		{label: "target", kind: kindEnum, value: orDefault(f.Target, "src_ip"), options: parser.TargetColumns,
+			help: "the column this value is written to"},
+		{label: "strategy", kind: kindEnum, value: orDefault(f.Strategy, "kv"), options: parser.Strategies,
+			help: "kv: key=value · regex: capture group 1 · word_map: translate · positional: nth token"},
 		{label: "key", kind: kindText, value: f.Key, help: "kv: the key= name to read"},
 		{label: "keys", kind: kindList, value: strings.Join(f.Keys, ", "), help: "kv: fallback keys"},
 		{label: "pattern", kind: kindText, value: f.Pattern, help: "regex: first capture group is used"},
 		{label: "source", kind: kindText, value: f.Source, help: "word_map: column to translate"},
 		{label: "map", kind: kindText, value: mapToText(f.Map), help: "word_map: from=to, from=to"},
-		{label: "pos", kind: kindEnum, value: orDefault(f.Pos, "first"), options: []string{"first", "last"}},
-		{label: "type", kind: kindEnum, value: orDefault(f.Type, ""), options: []string{"", "string", "int", "ip"}},
+		{label: "pos", kind: kindEnum, value: orDefault(f.Pos, "first"), options: []string{"first", "last"},
+			help: "positional: take the first or last value-like token"},
+		{label: "type", kind: kindEnum, value: orDefault(f.Type, ""), options: []string{"", "string", "int", "ip"},
+			help: "coerce the value; empty keeps the extracted text"},
 	})
+	fm.subtitle = "Only the fields for the chosen strategy matter; the rest can stay empty."
+	return fm
 }
 
 func mapToText(m map[string]string) string {
@@ -274,21 +351,28 @@ func splitList(s string) []string {
 	return out
 }
 
-// loadKeywords samples recent raw lines and extracts assignable tokens.
+// loadKeywords reads from the selected file (data/syslog/) and extracts
+// assignable key=value tokens from it. It skips the database and focuses
+// on working with a specific log file.
 func (e *parsersEditor) loadKeywords() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	lines, err := e.store.RecentRawLines(ctx, 60)
+	if e.selectedFile == "" {
+		e.tokErr = "select a file first (up/down on list, enter)"
+		return
+	}
+	raw, err := os.ReadFile(e.selectedFile)
 	if err != nil {
 		e.errText = err.Error()
 		return
 	}
-	e.rawLines = lines
+	e.rawLines = strings.Split(string(raw), "\n")
 
 	seen := map[string]bool{}
 	e.tokens = nil
-	for _, line := range lines {
+	for _, line := range e.rawLines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
 		for _, m := range kvTokenRe.FindAllStringSubmatch(line, -1) {
 			key, value := m[1], m[2]
 			if seen[key] {
@@ -305,7 +389,7 @@ func (e *parsersEditor) loadKeywords() {
 	}
 	e.tokCur = 0
 	if len(e.tokens) == 0 {
-		e.tokErr = "no key=value tokens found in recent logs"
+		e.tokErr = "no key=value tokens found in selected file"
 	} else {
 		e.tokErr = ""
 	}
@@ -421,9 +505,51 @@ func (e *parsersEditor) viewList(width, height int) string {
 	b.WriteString(truncateWidth(styleBrand.Render("◈ PARSERS")+
 		styleDim.Render("   config/parsers.yaml — new log types, no rebuild"), width-1))
 	b.WriteByte('\n')
-	hint := "n new · e edit · a add field · i assign keyword · x delete · s save · esc back"
+
+	// Discover files in data/syslog/
+	files, _ := filepath.Glob("data/syslog/*.log")
+	if len(files) == 0 {
+		files, _ = filepath.Glob("/mnt/DATA/PROJECT/Monitoring System.bak/data/syslog/*.log")
+	}
+
+	if e.selectedFile == "" && len(files) > 0 {
+		// File selection mode: show available log files
+		hint := "enter select file · i keywords · n new device · s save · r reload · esc back"
+		if width < 78 {
+			hint = "enter file · i keyword · n device · s save · esc"
+		}
+		b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
+		b.WriteByte('\n')
+
+		rows := make([]string, len(files))
+		for i, f := range files {
+			line := filepath.Base(f) + "  (press enter to view tail)"
+			if i == e.cursor {
+				rows[i] = styleSelected.Render(line)
+			} else {
+				rows[i] = styleDim.Render(line)
+			}
+		}
+		if len(rows) == 0 {
+			rows = []string{styleDim.Render("no .log files in data/syslog/")}
+		}
+
+		tableHeight := height - 6
+		if tableHeight < 4 {
+			tableHeight = 4
+		}
+		body, off := renderTable([]string{"FILE"}, []int{width - 8}, rows, e.offset, tableHeight)
+		e.offset = off
+		b.WriteString(panel("", body, width, tableHeight+4, true))
+		b.WriteByte('\n')
+		b.WriteString(e.statusLine(width))
+		return b.String()
+	}
+
+	// Device/profile mode: show devices and selected file's tail
+	hint := "n new · e edit · a add field · i keyword (from selected file) · x delete · s save · r reload · esc back"
 	if width < 78 {
-		hint = "n new · e edit · a field · i keyword · s save · esc"
+		hint = "n new · e edit · a field · i keyword · s save · r reload · esc"
 	}
 	b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
 	b.WriteByte('\n')
@@ -457,10 +583,15 @@ func (e *parsersEditor) viewList(width, height int) string {
 		rows = append(rows, styledRow(cells, widths, i == e.cursor))
 	}
 	if len(rows) == 0 {
-		rows = []string{styleDim.Render("no device profiles — press n to add one")}
+		rows = []string{
+			styleDim.Render("no profiles — the built-in parser is handling every line"),
+			styleDim.Render("n adds an override profile · select a file first (press r to see files)"),
+		}
 	}
 
-	tableHeight := height - 8
+	// Reserve room for the raw-line sample from the selected file
+	sampleRows := len(e.sampleView(width, 5))
+	tableHeight := height - 8 - sampleRows
 	if tableHeight < 4 {
 		tableHeight = 4
 	}
@@ -469,7 +600,52 @@ func (e *parsersEditor) viewList(width, height int) string {
 
 	b.WriteString(panel("", body, width, tableHeight+4, true))
 	b.WriteByte('\n')
+	for _, line := range e.sampleView(width, 5) {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
 	b.WriteString(e.statusLine(width))
+	return b.String()
+}
+
+// sampleView renders the newest raw lines from logs.raw_line, at most max
+// lines. It always returns at least one line so the layout stays stable.
+func (e *parsersEditor) sampleView(width, max int) []string {
+	if e.store == nil {
+		return nil
+	}
+	out := []string{styleAccent.Render("RECENT RAW") +
+		styleDim.Render("   newest first, from logs.raw_line")}
+	switch {
+	case e.sampleErr != "":
+		out = append(out, styleError.Render(truncateWidth("! "+e.sampleErr, width-1)))
+	case len(e.sample) == 0:
+		out = append(out, styleDim.Render("   nothing ingested yet — check the pipeline and data/syslog"))
+	default:
+		for _, line := range e.sample {
+			if len(out) > max {
+				break
+			}
+			out = append(out, styleDim.Render(truncateWidth("   "+cleanRawLine(line), width-1)))
+		}
+	}
+	return out
+}
+
+// cleanRawLine makes a raw log line safe to draw: tabs and control characters
+// would otherwise break column alignment or the terminal.
+func cleanRawLine(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\t':
+			b.WriteByte(' ')
+		case r < 0x20 || r == 0x7f:
+			// drop control characters
+		default:
+			b.WriteRune(r)
+		}
+	}
 	return b.String()
 }
 

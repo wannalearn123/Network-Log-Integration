@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"siskamlan/internal/store"
+	"siskamlan/internal/telegramauth"
 )
 
 // refreshInterval is how often dashboard data is reloaded.
@@ -28,6 +29,7 @@ const (
 	viewOverview
 	viewDetail
 	viewExportConfirm
+	viewTelegram
 )
 
 // dataMsg carries a completed refresh.
@@ -90,6 +92,7 @@ type Model struct {
 	detail        *detailModal
 	rulesEditor   *rulesEditor
 	parsersEditor *parsersEditor
+	telegram      *telegramPanel
 }
 
 // Options configure the dashboard.
@@ -100,6 +103,8 @@ type Options struct {
 	ParsersPath string
 	// ExportDir is where CSV exports are written.
 	ExportDir string
+	// Auth is the shared Telegram access store the panel manages.
+	Auth *telegramauth.Store
 }
 
 // New builds the dashboard model.
@@ -113,6 +118,7 @@ func New(opts Options) *Model {
 	}
 	m.rulesEditor = newRulesEditor(opts.RulesPath, opts.Store)
 	m.parsersEditor = newParsersEditor(opts.ParsersPath, opts.Store)
+	m.telegram = newTelegramPanel(opts.Auth)
 	return m
 }
 
@@ -255,6 +261,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.handleDetailKey(msg)
 	case viewExportConfirm:
 		return m, m.handleExportKey(msg)
+	case viewTelegram:
+		if m.telegram.update(msg) {
+			m.view = viewDashboard
+		}
+		return m, nil
 	case viewOverview:
 		switch msg.String() {
 		case "esc", "b", "o":
@@ -325,6 +336,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "P":
 		m.view = viewParsers
 		m.parsersEditor.open()
+		return m, nil
+	case "T":
+		m.view = viewTelegram
+		m.telegram.open()
 		return m, nil
 	case "o":
 		m.view = viewOverview
@@ -435,6 +450,8 @@ func (m *Model) View() string {
 		return m.viewExportConfirm()
 	case viewOverview:
 		return m.viewOverview()
+	case viewTelegram:
+		return m.telegram.view(m.width, m.height)
 	case viewHelp:
 		return m.viewHelp()
 	}
@@ -912,7 +929,7 @@ func (m *Model) viewAnomalies(width, height int) string {
 func (m *Model) viewFooter() string {
 	var keys string
 	if m.width >= 100 {
-		keys = "q quit │ p pause │ / search │ ↑↓ move │ tab focus │ ⏎ detail │ o overview │ e export │ R rules │ P parsers │ ? help"
+		keys = "q quit │ p pause │ / search │ ↑↓ move │ tab focus │ ⏎ detail │ o overview │ e export │ R rules │ P parsers │ T telegram │ ? help"
 	} else {
 		keys = "q quit │ p pause │ / search │ tab focus │ ⏎ detail │ R rules │ ? help"
 	}
@@ -945,6 +962,7 @@ func (m *Model) viewHelp() string {
 		section("Configuration (live, no restart)"),
 		key("R", "rules editor"),
 		key("P", "parser editor"),
+		key("T", "telegram access (approve / revoke chats)"),
 		section("Rules editor"),
 		key("a e x", "add · edit · delete"),
 		key("space", "enable / disable"),

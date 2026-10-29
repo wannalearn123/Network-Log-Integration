@@ -34,8 +34,10 @@ type Notifier struct {
 	enabled bool
 	minSev  string
 	token   string
-	chatIDs []string
 	apiBase string
+	// recipients returns the chats allowed to receive alerts. It is read on
+	// every send so newly approved or revoked chats take effect immediately.
+	recipients func() ([]string, error)
 
 	// maxAttempts and backoff are overridable so tests need not sleep.
 	maxAttempts int
@@ -43,23 +45,19 @@ type Notifier struct {
 }
 
 // New builds a notifier from the environment. When notifications are disabled
-// or unconfigured, Send is a no-op.
-func New() *Notifier {
+// or unconfigured, Send is a no-op. recipients supplies the authorized chats.
+func New(recipients func() ([]string, error)) *Notifier {
 	n := &Notifier{
-		client:  &http.Client{Timeout: requestTimeout},
-		queue:   make(chan string, queueSize),
-		enabled: envEnabled(),
-		minSev:  envMinSeverity(),
-		token:   strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
-		apiBase: strings.TrimRight(getenv("TELEGRAM_API_BASE", defaultAPIBase), "/"),
+		client:     &http.Client{Timeout: requestTimeout},
+		queue:      make(chan string, queueSize),
+		enabled:    envEnabled(),
+		minSev:     envMinSeverity(),
+		token:      strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")),
+		apiBase:    strings.TrimRight(getenv("TELEGRAM_API_BASE", defaultAPIBase), "/"),
+		recipients: recipients,
 
 		maxAttempts: maxAttempts,
 		backoff:     func(attempt int) time.Duration { return time.Duration(1<<attempt) * time.Second },
-	}
-	for _, id := range strings.Split(os.Getenv("TELEGRAM_CHAT_ID"), ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			n.chatIDs = append(n.chatIDs, id)
-		}
 	}
 	return n
 }
@@ -140,14 +138,23 @@ func (n *Notifier) deliver(text string) {
 
 // sendAll posts to every configured chat.
 func (n *Notifier) sendAll(text string) bool {
-	if n.token == "" || len(n.chatIDs) == 0 {
-		log.Print("notify: Telegram not configured (missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID) — skipping")
+	if n.token == "" || n.recipients == nil {
+		log.Print("notify: Telegram not configured (missing TELEGRAM_BOT_TOKEN or auth provider) — skipping")
+		return false
+	}
+	chatIDs, err := n.recipients()
+	if err != nil {
+		log.Printf("notify: load authorized chats: %v", err)
+		return false
+	}
+	if len(chatIDs) == 0 {
+		log.Print("notify: no authorized Telegram chats yet — alert not delivered")
 		return false
 	}
 	url := fmt.Sprintf("%s/bot%s/sendMessage", n.apiBase, n.token)
 
 	okAll := true
-	for _, chatID := range n.chatIDs {
+	for _, chatID := range chatIDs {
 		body, err := json.Marshal(map[string]string{"chat_id": chatID, "text": text})
 		if err != nil {
 			okAll = false

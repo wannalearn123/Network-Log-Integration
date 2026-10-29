@@ -232,3 +232,29 @@ func (s *Store) RecentRawLines(ctx context.Context, limit int) ([]string, error)
 	}
 	return out, rows.Err()
 }
+
+// LastLogTime returns the newest log timestamp, or the zero time when the
+// table is empty. /status uses it to show whether data is still flowing.
+func (s *Store) LastLogTime(ctx context.Context) (time.Time, error) {
+	var t *time.Time
+	if err := s.Pool.QueryRow(ctx, `SELECT MAX(timestamp) FROM logs`).Scan(&t); err != nil {
+		return time.Time{}, fmt.Errorf("store: last log time: %w", err)
+	}
+	if t == nil {
+		return time.Time{}, nil
+	}
+	return *t, nil
+}
+
+// AnomalyCounts returns detections in the last hour and the last 24 hours.
+func (s *Store) AnomalyCounts(ctx context.Context) (hour, day int, err error) {
+	err = s.Pool.QueryRow(ctx, `
+		SELECT
+		  COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '1 hour'),
+		  COUNT(*) FILTER (WHERE timestamp >= NOW() - INTERVAL '24 hours')
+		FROM anomalies`).Scan(&hour, &day)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: anomaly counts: %w", err)
+	}
+	return hour, day, nil
+}

@@ -1,31 +1,10 @@
-# SISKAMLAN parser configuration
-#
-# Devices are matched by hostname, in order, and map keywords in a raw log
-# line onto the structured columns the detector uses. Devices that do not
-# match fall back to the built-in parser.
-#
-# field strategies:
-#   kv          find key=value or key: value        (key / keys)
-#   regex       first capture group of pattern      (pattern)
-#   word_map    translate another column            (source / map)
-#   positional  first or last value-like token      (pos)
-#
-# Example:
-#
-# devices:
-#   - name: fortigate
-#     hostname_match: ['^firewall', '^lab-firewall']
-#     device_type: firewall
-#     fields:
-#       - {target: src_ip,   strategy: kv, key: src}
-#       - {target: dst_ip,   strategy: kv, key: dst}
-#       - {target: dst_port, strategy: kv, key: dpt, type: int}
-#       - {target: src_port, strategy: kv, key: spt, type: int}
-#       - {target: action,   strategy: word_map, source: action,
-#          map: {allow: allow, accept: allow, deny: deny, drop: deny, close: close}}
-#     events:
-#       - {event: fw_block, contains: ['act=deny', 'act=drop']}
-#       - {event: fw_allow, contains: ['act=accept', 'act=close']}
-#
 version: 1
-devices: []
+devices:
+  - name: new-device
+    device_type: switch
+    fields:
+      - target: mac
+        strategy: kv
+        key: Host
+        pos: first
+        type: string

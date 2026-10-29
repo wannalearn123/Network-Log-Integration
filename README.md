@@ -54,8 +54,33 @@ See `.env.example`. Key settings:
 | NOTIFY_MIN_SEVERITY | HIGH | Minimum alert severity |
 
 Retention deletes old records hourly while the detector runs. Telegram requires
-`TELEGRAM_BOT_TOKEN` and comma-separated `TELEGRAM_CHAT_ID`. Repeated merged
+only `TELEGRAM_BOT_TOKEN`; chats are approved at runtime. Repeated merged
 anomalies do not re-alert.
+
+#### Telegram access
+
+Access is granted per chat, not by a fixed chat ID list:
+
+1. A new chat sends `/start` to the bot. The bot asks for approval.
+2. A 6-character code appears on the dashboard's Telegram panel (`T`).
+   It expires after 2 minutes.
+3. The operator gives the code to the requester, who sends it to the bot.
+4. The chat is authorized and starts receiving alerts. It can then send `/status`.
+
+Three wrong codes lock that request out for 5 minutes. Approved chats are
+stored in `data/telegram_auth.json`, which both `./siskamlan run` and
+`./siskamlan tui` read. In the `T` panel, `x` rejects a pending request or
+revokes an approved chat.
+
+Upgrading from `TELEGRAM_CHAT_ID`: that variable is no longer read. Existing
+chats receive no alerts until each one completes the code step once.
+
+Bot commands:
+
+| Command | For | Shows |
+|---|---|---|
+| `/start` | anyone | requests access |
+| `/status` | approved chats | pipeline state, database reachability, last ingest, anomaly counts |
 
 ### `config/rules.yaml`
 
@@ -87,10 +112,21 @@ Conditions nest with `all` / `any` / `not`. Operators: `eq`, `ne`, `contains`,
 switch→MAC, else source IP) and `$mac` are synthetic group fields. An invalid
 edit is rejected and the previous rules keep running.
 
+The dashboard list shows a `MATCHES` column, and the edit form shows the
+condition in words. The form can only *rewrite* a single `event` filter
+(`contains_any`, or `contains` with one value). A nested `when` tree and
+`suppress_by` are shown read-only and saved back untouched, so editing a rate
+can never widen a rule into one that matches every row. To change a nested
+condition, edit the YAML by hand.
+
 ### `config/parsers.yaml`
 
 New log types are supported without rebuilding. A device profile matches by
 hostname and maps keywords onto structured columns.
+
+An empty `devices: []` list is normal: the built-in parser then handles every
+line. The `P` screen shows the newest raw lines from `logs.raw_line` under the
+profile list, so you can see what is arriving before writing a profile.
 
 ```yaml
 version: 1
@@ -131,6 +167,7 @@ existing behaviour. Changes apply within one second.
 | `e` | export the visible rows to CSV |
 | `R` | rules editor |
 | `P` | parser editor |
+| `T` | Telegram access (approve or revoke chats) |
 | `?` | help |
 
 CSV export writes two files into `exports/` (`logs-<timestamp>.csv` and

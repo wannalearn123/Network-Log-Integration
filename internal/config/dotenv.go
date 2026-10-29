@@ -33,8 +33,7 @@ func LoadDotEnv(path string) string {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
+		value = unquote(strings.TrimSpace(value))
 		if key == "" {
 			continue
 		}
@@ -43,4 +42,21 @@ func LoadDotEnv(path string) string {
 		}
 	}
 	return root
+}
+
+// unquote returns the value of a KEY=VALUE right-hand side. A quoted value is
+// taken verbatim between its quotes. An unquoted value ends at the first " #",
+// so `https://x   # comment` yields `https://x`, as python-dotenv does.
+func unquote(v string) string {
+	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') {
+		if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+			return v[1 : 1+end]
+		}
+	}
+	if i := strings.Index(v, " #"); i >= 0 {
+		v = v[:i]
+	} else if i := strings.Index(v, "\t#"); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }

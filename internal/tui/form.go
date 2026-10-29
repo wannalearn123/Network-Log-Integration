@@ -16,6 +16,7 @@ const (
 	kindInt
 	kindEnum
 	kindList // comma-separated text
+	kindInfo // displayed only: the editor cannot express this value
 )
 
 type formField struct {
@@ -28,12 +29,13 @@ type formField struct {
 
 // form is a small modal editor used by the rules and parser screens.
 type form struct {
-	title   string
-	fields  []formField
-	cursor  int
-	editing bool
-	input   textinput.Model
-	errText string
+	title    string
+	subtitle string // optional one-line explanation under the title
+	fields   []formField
+	cursor   int
+	editing  bool
+	input    textinput.Model
+	errText  string
 }
 
 func newForm(title string, fields []formField) *form {
@@ -106,7 +108,7 @@ func (f *form) update(msg tea.KeyMsg) (done, cancel bool) {
 	case "enter":
 		if f.fields[f.cursor].kind == kindEnum {
 			f.cycle(1)
-		} else {
+		} else if f.fields[f.cursor].kind != kindInfo {
 			f.beginEdit()
 		}
 	}
@@ -163,6 +165,10 @@ func (f *form) view(width int) string {
 	var b strings.Builder
 	b.WriteString(styleBrand.Render("◈ " + f.title))
 	b.WriteByte('\n')
+	if f.subtitle != "" {
+		b.WriteString(styleDim.Render(f.subtitle))
+		b.WriteByte('\n')
+	}
 	b.WriteString(styleDim.Render("↑↓ field · ←→ cycle · enter edit · ctrl+s save · esc cancel"))
 	b.WriteString("\n\n")
 
@@ -172,6 +178,14 @@ func (f *form) view(width int) string {
 			labelWidth = w
 		}
 	}
+	// Values can be long (a description, a nested rule condition), so they wrap
+	// inside the modal instead of overflowing it.
+	contentW := minInt(width-4, 76) - 8
+	valueW := contentW - (2 + labelWidth + 2)
+	if valueW < 12 {
+		valueW = 12
+	}
+	indent := strings.Repeat(" ", 2+labelWidth+2)
 
 	for i, fld := range f.fields {
 		selected := i == f.cursor
@@ -187,26 +201,42 @@ func (f *form) view(width int) string {
 			label = styleDim.Render(label)
 		}
 
-		var value string
+		var lines []string
 		switch {
 		case selected && f.editing:
-			value = f.input.View()
+			lines = []string{f.input.View()}
+		case fld.kind == kindInfo:
+			text := fld.value
+			if text == "" {
+				text = "(none)"
+			}
+			for _, l := range wrapText(text, valueW) {
+				lines = append(lines, styleDim.Render(l))
+			}
 		case fld.kind == kindEnum:
 			if selected {
-				value = styleAccentHi.Render("< " + fld.value + " >")
+				lines = []string{styleAccentHi.Render("< " + fld.value + " >")}
 			} else {
-				value = styleText.Render("< " + fld.value + " >")
+				lines = []string{styleText.Render("< " + fld.value + " >")}
 			}
 		case fld.value == "":
-			value = styleDim.Render("(empty)")
+			lines = []string{styleDim.Render("(empty)")}
 		case selected:
-			value = styleAccentHi.Render(fld.value)
+			for _, l := range wrapText(fld.value, valueW) {
+				lines = append(lines, styleAccentHi.Render(l))
+			}
 		default:
-			value = styleText.Render(fld.value)
+			for _, l := range wrapText(fld.value, valueW) {
+				lines = append(lines, styleText.Render(l))
+			}
 		}
 
-		b.WriteString(marker + label + "  " + value)
+		b.WriteString(marker + label + "  " + lines[0])
 		b.WriteByte('\n')
+		for _, extra := range lines[1:] {
+			b.WriteString(indent + extra)
+			b.WriteByte('\n')
+		}
 		if selected && fld.help != "" {
 			b.WriteString("    " + styleDim.Render(fld.help))
 			b.WriteByte('\n')

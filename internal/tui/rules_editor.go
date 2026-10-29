@@ -32,6 +32,10 @@ type rulesEditor struct {
 	form    *form
 	editIdx int
 
+	// whenLocked is set when the rule's condition is a nested tree the form
+	// cannot express. It is then shown read-only and preserved verbatim.
+	whenLocked bool
+
 	preview []string
 }
 
@@ -156,6 +160,10 @@ func (e *rulesEditor) startEdit(idx int) {
 }
 
 // ruleForm builds the edit form for a rule.
+//
+// Only the fields listed here are editable. Anything else on the rule (a
+// nested when tree, suppress_by) is shown read-only and carried through
+// untouched by applyForm, so editing a rate cannot silently widen a rule.
 func (e *rulesEditor) ruleForm(r rules.Rule) *form {
 	enabled := "on"
 	if !r.IsEnabled() {
@@ -169,16 +177,8 @@ func (e *rulesEditor) ruleForm(r rules.Rule) *form {
 	if groupBy == "" {
 		groupBy = "(none)"
 	}
-	eventContains := ""
-	if r.When.Field == "event" && r.When.Op == "contains_any" {
-		parts := make([]string, 0, len(r.When.Values))
-		for _, v := range r.When.Values {
-			parts = append(parts, fmt.Sprint(v))
-		}
-		eventContains = strings.Join(parts, ", ")
-	}
 
-	f := newForm("Rule: "+r.Name, []formField{
+	fields := []formField{
 		{label: "name", kind: kindText, value: r.Name},
 		{label: "enabled", kind: kindEnum, value: enabled, options: []string{"on", "off"}},
 		{label: "severity", kind: kindEnum, value: orDefault(r.Severity, "MEDIUM"),
@@ -191,13 +191,32 @@ func (e *rulesEditor) ruleForm(r rules.Rule) *form {
 		{label: "count", kind: kindEnum, value: count, options: []string{"rows", "distinct"}},
 		{label: "distinct_on", kind: kindText, value: orDefault(r.DistinctOn, ""),
 			help: "required when count=distinct"},
-		{label: "event_contains", kind: kindList, value: eventContains,
-			help: "case-insensitive substrings, any match; empty = all rows"},
-		{label: "cooldown_seconds", kind: kindInt, value: intOrEmpty(r.CooldownSeconds)},
-		{label: "description", kind: kindText, value: r.Description,
+	}
+
+	if vals, ok := editableEventFilter(r.When); ok {
+		e.whenLocked = false
+		fields = append(fields, formField{label: "event_contains", kind: kindList,
+			value: strings.Join(vals, ", "),
+			help:  "case-insensitive substrings on the event column, any match; empty = all rows"})
+	} else {
+		e.whenLocked = true
+		fields = append(fields, formField{label: "when", kind: kindInfo,
+			value: describeCondition(r.When),
+			help:  "nested condition — kept as-is; edit config/rules.yaml to change it"})
+	}
+
+	if len(r.SuppressBy) > 0 {
+		fields = append(fields, formField{label: "suppress_by", kind: kindInfo,
+			value: strings.Join(r.SuppressBy, ", "),
+			help:  "kept as-is; edit config/rules.yaml to change it"})
+	}
+
+	fields = append(fields,
+		formField{label: "cooldown_seconds", kind: kindInt, value: intOrEmpty(r.CooldownSeconds)},
+		formField{label: "description", kind: kindText, value: r.Description,
 			help: "supports {entity} {count} {window}"},
-	})
-	return f
+	)
+	return newForm("Rule: "+r.Name, fields)
 }
 
 func orDefault(s, fallback string) string {
@@ -233,22 +252,34 @@ func (e *rulesEditor) updateForm(msg tea.KeyMsg) tea.Cmd {
 }
 
 // applyForm converts the form back into a rule and stores it.
+//
+// When editing, it starts from the rule already in memory and overwrites only
+// the fields the form owns. That keeps suppress_by and any nested when tree
+// intact — rebuilding the rule from the form alone would drop them and turn a
+// narrow rule into one that matches every row.
 func (e *rulesEditor) applyForm() {
 	v := e.form.values()
-	r := rules.Rule{
-		Name:            strings.TrimSpace(v["name"]),
-		Severity:        v["severity"],
-		Description:     v["description"],
-		Rate:            e.form.floatValue("rate", 0),
-		MinCount:        e.form.intValue("min_count", 0),
-		DistinctOn:      strings.TrimSpace(v["distinct_on"]),
-		CooldownSeconds: e.form.intValue("cooldown_seconds", 0),
+	var r rules.Rule
+	if e.editIdx >= 0 && e.editIdx < len(e.rf.Rules) {
+		r = e.rf.Rules[e.editIdx]
 	}
+
+	r.Name = strings.TrimSpace(v["name"])
+	r.Severity = v["severity"]
+	r.Description = v["description"]
+	r.Rate = e.form.floatValue("rate", 0)
+	r.MinCount = e.form.intValue("min_count", 0)
+	r.DistinctOn = strings.TrimSpace(v["distinct_on"])
+	r.CooldownSeconds = e.form.intValue("cooldown_seconds", 0)
 	on := v["enabled"] != "off"
 	r.Enabled = &on
+
+	r.Count = ""
 	if v["count"] == "distinct" {
 		r.Count = "distinct"
 	}
+
+	r.GroupBy = nil
 	if g := strings.TrimSpace(v["group_by"]); g != "" && g != "(none)" {
 		for _, part := range strings.Split(g, ",") {
 			if p := strings.TrimSpace(part); p != "" {
@@ -256,15 +287,23 @@ func (e *rulesEditor) applyForm() {
 			}
 		}
 	}
-	if ev := strings.TrimSpace(v["event_contains"]); ev != "" {
-		var vals []any
-		for _, part := range strings.Split(ev, ",") {
-			if p := strings.TrimSpace(part); p != "" {
-				vals = append(vals, p)
+
+	// A locked condition was never editable, so it is carried through as-is.
+	if !e.whenLocked {
+		r.When = rules.Condition{}
+		if ev := strings.TrimSpace(v["event_contains"]); ev != "" {
+			var vals []any
+			for _, part := range strings.Split(ev, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					vals = append(vals, p)
+				}
+			}
+			if len(vals) > 0 {
+				r.When = rules.Condition{Field: "event", Op: "contains_any", Values: vals}
 			}
 		}
-		r.When = rules.Condition{Field: "event", Op: "contains_any", Values: vals}
 	}
+
 	if r.Description == "" {
 		r.Description = r.Name + " — {count} in {window}s"
 	}
@@ -279,6 +318,7 @@ func (e *rulesEditor) applyForm() {
 	}
 	e.mode = modeList
 	e.form = nil
+	e.whenLocked = false
 }
 
 // save validates and writes the file.
@@ -357,11 +397,14 @@ func (e *rulesEditor) viewList(width, height int) string {
 
 	avail := width - 8
 	sets := [][]col{
-		{{"", 2, false}, {"NAME", 17, true}, {"SEVERITY", 9, false},
-			{"RATE", 8, false}, {"GROUP BY", 16, true}, {"COUNT", 8, false}},
-		{{"", 2, false}, {"NAME", 16, true}, {"SEVERITY", 9, false},
-			{"RATE", 8, false}, {"COUNT", 8, false}},
-		{{"", 2, false}, {"NAME", 16, true}, {"SEVERITY", 9, false}},
+		{{"", 2, false}, {"NAME", 14, true}, {"SEVERITY", 9, false},
+			{"RATE", 6, false}, {"GROUP BY", 14, true}, {"COUNT", 8, false},
+			{"MATCHES", 18, true}},
+		{{"", 2, false}, {"NAME", 14, true}, {"SEVERITY", 9, false},
+			{"RATE", 6, false}, {"MATCHES", 20, true}},
+		{{"", 2, false}, {"NAME", 14, true}, {"SEVERITY", 9, false},
+			{"RATE", 6, false}},
+		{{"", 2, false}, {"NAME", 14, true}},
 	}
 	headers, widths, ok := fitCols(sets, avail)
 	if !ok {
@@ -400,6 +443,8 @@ func (e *rulesEditor) viewList(width, height int) string {
 				cells[j] = group
 			case "COUNT":
 				cells[j] = count
+			case "MATCHES":
+				cells[j] = matchesSummary(r)
 			}
 		}
 
