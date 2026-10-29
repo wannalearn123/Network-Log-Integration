@@ -129,6 +129,13 @@ func ValidateConfig(c Config) error {
 		if d.DeviceType != "" && !validDeviceType(d.DeviceType) {
 			return fmt.Errorf("%s: unknown device_type %q", where, d.DeviceType)
 		}
+		// A device with no hostname_match can never be selected by match(),
+		// so it is dead config: it looks configured but silently does nothing
+		// to every incoming line. Reject it instead of shipping an inert
+		// profile.
+		if len(d.HostnameMatch) == 0 {
+			return fmt.Errorf("%s: hostname_match is required (otherwise the profile never applies)", where)
+		}
 		for _, expr := range d.HostnameMatch {
 			if _, err := regexp.Compile(expr); err != nil {
 				return fmt.Errorf("%s: bad hostname_match %q: %w", where, expr, err)

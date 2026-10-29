@@ -249,3 +249,18 @@ func (f *form) view(width int) string {
 	}
 	return modalBox(b.String(), minInt(width-4, 76))
 }
+
+// fieldByLabel returns the field with the given label, or nil.
+//
+// Editors use it to inspect or retarget a single row of a form.
+func fieldByLabel(f *form, label string) *formField {
+	if f == nil {
+		return nil
+	}
+	for i := range f.fields {
+		if f.fields[i].label == label {
+			return &f.fields[i]
+		}
+	}
+	return nil
+}

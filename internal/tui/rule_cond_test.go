@@ -226,11 +226,3 @@ func ruleIndex(t *testing.T, e *rulesEditor, name string) int {
 	return -1
 }
 
-func fieldByLabel(f *form, label string) *formField {
-	for i := range f.fields {
-		if f.fields[i].label == label {
-			return &f.fields[i]
-		}
-	}
-	return nil
-}

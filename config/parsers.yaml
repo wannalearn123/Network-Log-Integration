@@ -1,10 +1,19 @@
 version: 1
+# Device profiles overlay the built-in extraction. hostname_match is
+# required: a profile without it can never be selected, so the parser would
+# silently ignore it.
+#
+# Built-in rules already fill mac/vlan_id/ifname/peer_ifname for switch,
+# router, and AP lines, so a profile's real value here is the events list,
+# which names the vendor's message codes.
 devices:
-  - name: new-device
+  - name: switch-lan
+    hostname_match: ["^switch\\."]
     device_type: switch
-    fields:
-      - target: mac
-        strategy: kv
-        key: Host
-        pos: first
-        type: string
+    events:
+      - event: mac_learn
+        contains: ["%MATM-5-LEARN"]
+      - event: mac_flap
+        any_of: ["%MATM-4-MOVE", "MOVED", "flap"]
+      - event: stp_event
+        any_of: ["%SPANTREE", "%STP-"]

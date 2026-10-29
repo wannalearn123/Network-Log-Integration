@@ -16,14 +16,6 @@ import (
 	"siskamlan/internal/store"
 )
 
-// keyword is one assignable token found in a sample raw line.
-type keyword struct {
-	key      string
-	value    string
-	guess    string // suggested target column
-	strategy string
-}
-
 var kvTokenRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9_-]*)=([^\s,;)\]"'{}]+)`)
 
 // parsersEditor lists and edits config/parsers.yaml.
@@ -44,13 +36,13 @@ type parsersEditor struct {
 	editField  int // field index, or -1 when adding
 
 	// selectedFile is a path to a .log file in data/syslog/
-	// when set, loadKeywords reads from that file instead of the DB.
+	// when set, loadCandidates reads from that file instead of the DB.
 	selectedFile string
 
-	rawLines []string
-	tokens   []keyword
-	tokCur   int
-	tokErr   string
+	rawLines   []string
+	candidates []candidate
+	tokCur     int
+	tokErr     string
 
 	// sample holds the newest raw lines, shown on the list screen so the
 	// operator can see what is arriving before writing a profile.
@@ -115,20 +107,64 @@ func (e *parsersEditor) refreshFromFile() {
 	}
 }
 
+// updateForm handles the assignment form.
+//
+// Cycling the strategy rebuilds the form around the new strategy, so the
+// inputs on screen always match what the parser will read. Without this the
+// operator picks "regex" and still only sees key/keys, which is how a rule
+// ends up with a pattern that was never typed.
+func (e *parsersEditor) updateForm(msg tea.KeyMsg) tea.Cmd {
+	strategyBefore := ""
+	if f := fieldByLabel(e.form, "strategy"); f != nil {
+		strategyBefore = f.value
+	}
+	done, cancel := e.form.update(msg)
+	if cancel {
+		e.mode = modeList
+		e.form = nil
+		return nil
+	}
+	if done {
+		e.applyForm()
+		return nil
+	}
+	if f := fieldByLabel(e.form, "strategy"); f != nil && f.value != strategyBefore {
+		e.rebuildFieldForm()
+	}
+	return nil
+}
+
+// rebuildFieldForm swaps in the inputs for the newly selected strategy while
+// carrying over the values that still apply.
+func (e *parsersEditor) rebuildFieldForm() {
+	v := e.form.values()
+	strategy := v["strategy"]
+	next := e.fieldForm(parser.FieldRule{
+		Target:   v["target"],
+		Strategy: strategy,
+		Key:      strings.TrimSpace(v["key"]),
+		Keys:     splitList(v["keys"]),
+		Pattern:  strings.TrimSpace(v["pattern"]),
+		Source:   strings.TrimSpace(v["source"]),
+		Map:      textToMap(v["map"]),
+		Pos:      v["pos"],
+		Type:     v["type"],
+	})
+	// Keep the cursor on the strategy row so ←→ keeps cycling.
+	for i := range next.fields {
+		if next.fields[i].label == "strategy" {
+			next.cursor = i
+			break
+		}
+	}
+	e.form = next
+}
+
 func (e *parsersEditor) update(msg tea.KeyMsg) tea.Cmd {
 	switch e.mode {
 	case modeForm:
-		done, cancel := e.form.update(msg)
-		if cancel {
-			e.mode = modeList
-			e.form = nil
-			return nil
-		}
-		if done {
-			e.applyForm()
-		}
-		return nil
-	case modePreview: // reused for the keyword picker
+		return e.updateForm(msg)
+	case modePreview: // reused for the candidate picker
 		return e.updateKeyword(msg)
 	}
 	return e.updateList(msg)
@@ -193,7 +229,9 @@ func (e *parsersEditor) updateList(msg tea.KeyMsg) tea.Cmd {
 			e.errText = "add a device first (n)"
 		}
 	case "i":
-		e.loadKeywords()
+		e.loadCandidates()
+	case "p":
+		e.showPreview()
 	case "r":
 		e.open()
 		e.status = "reloaded " + time.Now().Format("15:04:05")
@@ -213,17 +251,41 @@ func (e *parsersEditor) startDeviceForm(idx int) {
 	if dt == "" {
 		dt = "other"
 	}
+	suggest := ""
+	if e.selectedFile != "" {
+		suggest = hostnameSuggest(e.selectedFile)
+	}
+	hm := strings.Join(d.HostnameMatch, ", ")
+	if hm == "" && suggest != "" {
+		// Seed from the file the operator is looking at; a profile with no
+		// hostname_match silently never matches, which is the single most
+		// common way a parser appears "broken".
+		hm = suggest
+	}
 	e.form = newForm("Device profile", []formField{
 		{label: "name", kind: kindText, value: orDefault(d.Name, "new-device"),
 			help: "a label only — used in messages, not for matching"},
-		{label: "hostname_match", kind: kindList, value: strings.Join(d.HostnameMatch, ", "),
-			help: "regex list, comma-separated, tested against the hostname; first match wins"},
+		{label: "hostname_match", kind: kindList, value: hm,
+			help: "REQUIRED: regex list, comma-separated, tested against hostname; first match wins"},
 		{label: "device_type", kind: kindEnum, value: dt,
 			options: []string{"other", "router", "switch", "ap", "firewall", "syslog"},
 			help:    "sets the device_type column and enables built-in heuristics"},
 	})
-	e.form.subtitle = "A profile only maps raw log tokens onto columns; add those with a, or pick one with i."
+	e.form.subtitle = "hostname_match decides whether this profile runs at all; without it nothing is applied."
 	e.mode = modeForm
+}
+
+// hostnameSuggest derives a hostname_match regex from a sample line so the
+// operator starts from a value that actually matches the file in front of
+// them instead of an empty field.
+func hostnameSuggest(file string) string {
+	base := filepath.Base(file)
+	base = strings.TrimSuffix(base, ".log")
+	// data/syslog/<hostname>.log -> ^<hostname>$ escaped for regex.
+	if base == "" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(base) + "$"
 }
 
 func (e *parsersEditor) startFieldForm(deviceIdx, fieldIdx int) {
@@ -237,23 +299,52 @@ func (e *parsersEditor) startFieldForm(deviceIdx, fieldIdx int) {
 	e.mode = modeForm
 }
 
+// fieldForm builds the assignment form for one field rule.
+//
+// Only the inputs the chosen strategy actually reads are shown. The old form
+// listed key/keys/pattern/source/map/pos for every strategy, which is how a
+// `kv` rule ended up carrying a `pos` and a switch MAC got saved as
+// `key: Host` — a combination the parser silently ignores.
 func (e *parsersEditor) fieldForm(f parser.FieldRule) *form {
-	fm := newForm("Field assignment", []formField{
+	strategy := orDefault(f.Strategy, "kv")
+	fields := []formField{
 		{label: "target", kind: kindEnum, value: orDefault(f.Target, "src_ip"), options: parser.TargetColumns,
 			help: "the column this value is written to"},
-		{label: "strategy", kind: kindEnum, value: orDefault(f.Strategy, "kv"), options: parser.Strategies,
-			help: "kv: key=value · regex: capture group 1 · word_map: translate · positional: nth token"},
-		{label: "key", kind: kindText, value: f.Key, help: "kv: the key= name to read"},
-		{label: "keys", kind: kindList, value: strings.Join(f.Keys, ", "), help: "kv: fallback keys"},
-		{label: "pattern", kind: kindText, value: f.Pattern, help: "regex: first capture group is used"},
-		{label: "source", kind: kindText, value: f.Source, help: "word_map: column to translate"},
-		{label: "map", kind: kindText, value: mapToText(f.Map), help: "word_map: from=to, from=to"},
-		{label: "pos", kind: kindEnum, value: orDefault(f.Pos, "first"), options: []string{"first", "last"},
-			help: "positional: take the first or last value-like token"},
-		{label: "type", kind: kindEnum, value: orDefault(f.Type, ""), options: []string{"", "string", "int", "ip"},
-			help: "coerce the value; empty keeps the extracted text"},
-	})
-	fm.subtitle = "Only the fields for the chosen strategy matter; the rest can stay empty."
+		{label: "strategy", kind: kindEnum, value: strategy, options: parser.Strategies,
+			help: "kv: key=value · regex: capture group 1 · word_map: translate · positional: first/last token"},
+	}
+	switch strategy {
+	case "kv":
+		fields = append(fields,
+			formField{label: "key", kind: kindText, value: f.Key,
+				help: "the KEY in KEY=value — not a bare word like 'Host'"},
+			formField{label: "keys", kind: kindList, value: strings.Join(f.Keys, ", "),
+				help: "fallback keys, tried in order"},
+		)
+	case "regex":
+		fields = append(fields,
+			formField{label: "pattern", kind: kindText, value: f.Pattern,
+				help: "capture group 1 is the value; anchor on surrounding words"},
+		)
+	case "word_map":
+		fields = append(fields,
+			formField{label: "source", kind: kindText, value: f.Source,
+				help: "existing column to translate"},
+			formField{label: "map", kind: kindText, value: mapToText(f.Map),
+				help: "from=to, from=to"},
+		)
+	case "positional":
+		fields = append(fields,
+			formField{label: "pos", kind: kindEnum, value: orDefault(f.Pos, "first"), options: []string{"first", "last"},
+				help: "take the first or last value-like token in the line"},
+		)
+	}
+	fields = append(fields, formField{label: "type", kind: kindEnum, value: orDefault(f.Type, ""),
+		options: []string{"", "string", "int", "ip"},
+		help:    "coerce the value; empty keeps the extracted text"})
+
+	fm := newForm("Field assignment", fields)
+	fm.subtitle = "Only the inputs for the chosen strategy are shown; ←→ on strategy rebuilds this form."
 	return fm
 }
 
@@ -289,10 +380,25 @@ func (e *parsersEditor) applyForm() {
 	// Field form has a "target" and "strategy" label combination; device form
 	// has "hostname_match".
 	if _, isDevice := v["hostname_match"]; isDevice {
+		hm := splitList(v["hostname_match"])
+		if len(hm) == 0 {
+			// Refuse rather than save a profile that can never match: it
+			// looks correct in the list but does nothing to incoming lines.
+			e.errText = "hostname_match is required — a profile without it never matches any host"
+			e.mode = modeList
+			e.form = nil
+			return
+		}
 		d := parser.Device{
 			Name:          strings.TrimSpace(v["name"]),
 			DeviceType:    v["device_type"],
-			HostnameMatch: splitList(v["hostname_match"]),
+			HostnameMatch: hm,
+		}
+		if d.Name == "" {
+			e.errText = "name is required"
+			e.mode = modeList
+			e.form = nil
+			return
 		}
 		if e.editDevice >= 0 && e.editDevice < len(e.cfg.Devices) {
 			d.Fields = e.cfg.Devices[e.editDevice].Fields
@@ -305,17 +411,26 @@ func (e *parsersEditor) applyForm() {
 			e.status = "added device " + d.Name + " (unsaved)"
 		}
 	} else {
+		// Build only the inputs the chosen strategy reads, so a rule never
+		// carries meaningless fields (kv + pos, regex + key, ...).
 		f := parser.FieldRule{
 			Target:   v["target"],
 			Strategy: v["strategy"],
-			Key:      strings.TrimSpace(v["key"]),
-			Keys:     splitList(v["keys"]),
-			Pattern:  strings.TrimSpace(v["pattern"]),
-			Source:   strings.TrimSpace(v["source"]),
-			Map:      textToMap(v["map"]),
-			Pos:      v["pos"],
-			Type:     v["type"],
 		}
+		switch f.Strategy {
+		case "kv":
+			f.Key = strings.TrimSpace(v["key"])
+			f.Keys = splitList(v["keys"])
+		case "regex":
+			f.Pattern = strings.TrimSpace(v["pattern"])
+		case "word_map":
+			f.Source = strings.TrimSpace(v["source"])
+			f.Map = textToMap(v["map"])
+		case "positional":
+			f.Pos = v["pos"]
+		}
+		f.Type = v["type"]
+
 		di := e.editDevice
 		if di < 0 || di >= len(e.cfg.Devices) {
 			e.errText = "no device selected"
@@ -331,14 +446,19 @@ func (e *parsersEditor) applyForm() {
 		e.status = fmt.Sprintf("assigned %s on %s (unsaved)", f.Target, e.cfg.Devices[di].Name)
 	}
 
-	// Validate the whole document before it can be saved.
-	if err := parser.ValidateConfig(e.cfg); err != nil {
-		e.errText = err.Error()
-	} else {
-		e.errText = ""
-	}
+	e.errText = e.validateCfg()
 	e.mode = modeList
 	e.form = nil
+}
+
+// validateCfg returns the config error text, or "" when the document is
+// valid. It is used after every edit so a bad rule is reported immediately
+// instead of at save time.
+func (e *parsersEditor) validateCfg() string {
+	if err := parser.ValidateConfig(e.cfg); err != nil {
+		return err.Error()
+	}
+	return ""
 }
 
 func splitList(s string) []string {
@@ -351,10 +471,14 @@ func splitList(s string) []string {
 	return out
 }
 
-// loadKeywords reads from the selected file (data/syslog/) and extracts
-// assignable key=value tokens from it. It skips the database and focuses
-// on working with a specific log file.
-func (e *parsersEditor) loadKeywords() {
+// loadCandidates reads the selected file and derives every field rule the
+// editor can offer for it.
+//
+// It is no longer kv-only: vendors such as switches, routers, and APs emit
+// prose like `Host aabb.ccdd.eeff learned on Gi0/2 vlan 12`, which has no
+// `=` at all. Those lines are covered by the anchored regex extractors and
+// by positional fallbacks, so the picker is never empty.
+func (e *parsersEditor) loadCandidates() {
 	if e.selectedFile == "" {
 		e.tokErr = "select a file first (up/down on list, enter)"
 		return
@@ -366,51 +490,64 @@ func (e *parsersEditor) loadKeywords() {
 	}
 	e.rawLines = strings.Split(string(raw), "\n")
 
-	seen := map[string]bool{}
-	e.tokens = nil
-	for _, line := range e.rawLines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		for _, m := range kvTokenRe.FindAllStringSubmatch(line, -1) {
-			key, value := m[1], m[2]
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			e.tokens = append(e.tokens, keyword{
-				key:      key,
-				value:    value,
-				guess:    guessTarget(key, value),
-				strategy: "kv",
-			})
-		}
-	}
+	// Sample a spread of lines rather than only the head: vendor logs
+	// interleave several message shapes and the head may miss them.
+	lines := sampleLines(e.rawLines, 400)
+	e.candidates = buildCandidates(lines)
+
 	e.tokCur = 0
-	if len(e.tokens) == 0 {
-		e.tokErr = "no key=value tokens found in selected file"
+	if len(e.candidates) == 0 {
+		e.tokErr = "no assignable values found — the file may be empty or unrecognised"
 	} else {
 		e.tokErr = ""
 	}
 	e.mode = modePreview
 }
 
+// sampleLines returns up to max non-empty lines, evenly spread across the
+// file so every message shape has a chance to contribute candidates.
+func sampleLines(all []string, max int) []string {
+	var clean []string
+	for _, l := range all {
+		if l = strings.TrimSpace(l); l != "" {
+			clean = append(clean, l)
+		}
+	}
+	if len(clean) <= max {
+		return clean
+	}
+	out := make([]string, 0, max)
+	step := float64(len(clean)) / float64(max)
+	for i := 0; i < max; i++ {
+		out = append(out, clean[int(float64(i)*step)])
+	}
+	return out
+}
+
 // guessTarget suggests a column from the token name and value shape.
+//
+// A wrong guess is worse than no guess: the operator accepts the pre-filled
+// form, and the value lands in a column nothing reads. So the name is matched
+// from most to least specific, and the fallback leaves the column alone
+// rather than defaulting to src_ip/action.
 func guessTarget(key, value string) string {
-	lk := strings.ToLower(key)
+	lk := strings.ToLower(strings.TrimSpace(key))
+
+	// Network identity keys first: they must win over the port/action rules.
 	switch {
-	case strings.Contains(lk, "src") && strings.Contains(lk, "ip"):
-		return "src_ip"
-	case strings.Contains(lk, "dst") && strings.Contains(lk, "ip"):
+	case lk == "gateway" || lk == "gw" || lk == "nexthop" || lk == "next-hop":
+		return "gateway"
+	case strings.Contains(lk, "dst") && strings.Contains(lk, "addr"),
+		lk == "dst" || lk == "dstip" || lk == "dst_ip" || lk == "dest" ||
+			lk == "daddr" || lk == "to":
 		return "dst_ip"
-	case lk == "src" || lk == "srcip" || lk == "source":
+	case strings.Contains(lk, "src") && strings.Contains(lk, "addr"),
+		lk == "src" || lk == "srcip" || lk == "src_ip" || lk == "source" ||
+			lk == "saddr" || lk == "from":
 		return "src_ip"
-	case lk == "dst" || lk == "dstip" || lk == "dest":
-		return "dst_ip"
-	case strings.Contains(lk, "port") && strings.Contains(lk, "src"), lk == "spt":
+	case lk == "spt" || lk == "sport" || lk == "srcport" || lk == "src-port":
 		return "src_port"
-	case strings.Contains(lk, "port"), lk == "dpt", lk == "dport":
+	case lk == "dpt" || lk == "dport" || lk == "dstport" || lk == "dst-port":
 		return "dst_port"
 	case strings.Contains(lk, "proto"):
 		return "proto"
@@ -423,27 +560,36 @@ func guessTarget(key, value string) string {
 		return "mac"
 	case strings.Contains(lk, "ssid"):
 		return "ssid"
-	case strings.Contains(lk, "signal"):
+	case strings.Contains(lk, "signal") || strings.Contains(lk, "rssi"):
 		return "signal_dbm"
 	case strings.Contains(lk, "reason"):
 		return "reason"
 	case strings.Contains(lk, "vlan"):
 		return "vlan_id"
+	case strings.Contains(lk, "ifname") || lk == "interface" || lk == "iface" || lk == "port-name":
+		return "ifname"
 	}
-	if isIPv4(value) {
+
+	// Shape-based fallback, only for unambiguous shapes. A bare integer is
+	// NOT a port: it is far more often an id, a count, or a status.
+	switch {
+	case isIPv4(value):
 		return "src_ip"
+	case ipv4Shape.MatchString(value) && strings.Contains(value, "/"):
+		return "route_dst"
 	}
-	if _, err := strconv.Atoi(value); err == nil {
-		return "dst_port"
-	}
-	return "action"
+	return ""
 }
 
 var ipv4Shape = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}$`)
 
 func isIPv4(v string) bool { return ipv4Shape.MatchString(v) }
 
-// updateKeyword handles the token picker.
+// updateKeyword handles the candidate picker.
+//
+// Selecting a candidate opens the assignment form pre-filled with that
+// candidate's actual strategy, key/pattern, and type, with a live preview of
+// the value it extracts — so the saved rule is one the parser can execute.
 func (e *parsersEditor) updateKeyword(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "esc", "b":
@@ -454,33 +600,113 @@ func (e *parsersEditor) updateKeyword(msg tea.KeyMsg) tea.Cmd {
 			e.tokCur--
 		}
 	case "down", "j":
-		if e.tokCur < len(e.tokens)-1 {
+		if e.tokCur < len(e.candidates)-1 {
 			e.tokCur++
 		}
 	case "enter", "a":
-		if e.tokCur < len(e.tokens) {
-			tok := e.tokens[e.tokCur]
+		if e.tokCur < len(e.candidates) {
+			cand := e.candidates[e.tokCur]
 			if e.cursor < 0 || e.cursor >= len(e.cfg.Devices) {
 				e.errText = "add a device first (n)"
 				e.mode = modeList
 				return nil
 			}
-			e.startFieldForm(e.cursor, -1)
-			// Pre-fill from the chosen keyword.
-			vals := map[string]string{
-				"target": tok.guess, "strategy": "kv", "key": tok.key,
-			}
-			for i := range e.form.fields {
-				if v, ok := vals[e.form.fields[i].label]; ok {
-					e.form.fields[i].value = v
+			if cand.needsTarget {
+				// The value's column could not be inferred. Open the form so
+				// the operator picks one; guessing here is how a value ends
+				// up in a column nothing reads.
+				e.startFieldForm(e.cursor, -1)
+				fieldByLabel(e.form, "strategy").value = cand.strategy
+				e.rebuildFieldForm()
+				if f := fieldByLabel(e.form, "pos"); f != nil {
+					f.value = cand.pos
 				}
+				if f := fieldByLabel(e.form, "type"); f != nil && cand.typ != "" {
+					f.value = cand.typ
+				}
+				e.form.subtitle = fmt.Sprintf("pick a target column for %q — %s",
+					cand.sample, cand.origin)
+				return nil
 			}
+			if err := e.addCandidateRule(e.cursor, cand); err != nil {
+				e.errText = err.Error()
+				e.mode = modeList
+				return nil
+			}
+			e.startFieldForm(e.cursor, len(e.cfg.Devices[e.cursor].Fields)-1)
+			e.form.subtitle = fmt.Sprintf("from %s · preview: %s → %s",
+				cand.origin, cand.target, cand.preview())
 		}
 	}
 	return nil
 }
 
+// addCandidateRule appends the rule a candidate describes and immediately
+// verifies it against the sampled lines. A rule that matches nothing is
+// rejected instead of being saved as a silent no-op.
+func (e *parsersEditor) addCandidateRule(deviceIdx int, cand candidate) error {
+	if deviceIdx < 0 || deviceIdx >= len(e.cfg.Devices) {
+		return fmt.Errorf("no device selected")
+	}
+	rule := cand.rule()
+	if err := parser.ValidateConfig(parser.Config{
+		Version: e.cfg.Version,
+		Devices: []parser.Device{{
+			Name:          e.cfg.Devices[deviceIdx].Name,
+			HostnameMatch: []string{"."},
+			Fields:        []parser.FieldRule{rule},
+		}},
+	}); err != nil {
+		return fmt.Errorf("rule rejected: %w", err)
+	}
+	if err := verifyRule(rule, e.sample); err != nil {
+		return err
+	}
+	e.cfg.Devices[deviceIdx].Fields = append(e.cfg.Devices[deviceIdx].Fields, rule)
+	e.status = fmt.Sprintf("assigned %s via %s on %s (unsaved)",
+		rule.Target, rule.Strategy, e.cfg.Devices[deviceIdx].Name)
+	return nil
+}
+
+// showPreview parses the selected file's first sample line with the current
+// unsaved config and reports the result in the status line.
+//
+// The pane already shows this live; `p` also validates the document, so a
+// broken rule cannot be previewed as if it worked.
+func (e *parsersEditor) showPreview() {
+	if e.selectedFile == "" {
+		e.errText = "select a file first (up/down on the file list, enter)"
+		return
+	}
+	if len(e.sample) == 0 {
+		e.errText = "no sample lines in " + filepath.Base(e.selectedFile)
+		return
+	}
+	if msg := e.validateCfg(); msg != "" {
+		e.errText = msg
+		return
+	}
+	rows, err := previewLine(e.cfg, e.sample[0])
+	if err != nil {
+		e.errText = err.Error()
+		return
+	}
+	if len(rows) == 0 {
+		e.errText = "profile produced no columns for this line"
+		return
+	}
+	e.errText = ""
+	e.status = fmt.Sprintf("preview: %d columns from %s (%d device profiles)",
+		len(rows), filepath.Base(e.selectedFile), len(e.cfg.Devices))
+}
+
 func (e *parsersEditor) save() {
+	// Refuse to write a document the parser would reject; the file keeps the
+	// last good contents and the editor shows why.
+	if msg := e.validateCfg(); msg != "" {
+		e.errText = "not saved — " + msg
+		return
+	}
 	if err := e.file.Save(e.cfg, parser.EncodeConfig); err != nil {
 		e.errText = err.Error()
 		return
@@ -514,9 +740,9 @@ func (e *parsersEditor) viewList(width, height int) string {
 
 	if e.selectedFile == "" && len(files) > 0 {
 		// File selection mode: show available log files
-		hint := "enter select file · i keywords · n new device · s save · r reload · esc back"
+		hint := "enter select file · n new device · s save · r reload · esc back"
 		if width < 78 {
-			hint = "enter file · i keyword · n device · s save · esc"
+			hint = "enter file · n device · s save · esc"
 		}
 		b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
 		b.WriteByte('\n')
@@ -547,17 +773,17 @@ func (e *parsersEditor) viewList(width, height int) string {
 	}
 
 	// Device/profile mode: show devices and selected file's tail
-	hint := "n new · e edit · a add field · i keyword (from selected file) · x delete · s save · r reload · esc back"
+	hint := "n new · e edit · a add field · i pick from file · p preview · x delete · s save · r reload · esc back"
 	if width < 78 {
-		hint = "n new · e edit · a field · i keyword · s save · r reload · esc"
+		hint = "n new · e edit · a field · i pick · p preview · s save · esc"
 	}
 	b.WriteString(styleDim.Render(truncateWidth(hint, width-1)))
 	b.WriteByte('\n')
 
 	avail := width - 8
 	sets := [][]col{
-		{{"NAME", 16, true}, {"HOST MATCH", 26, true}, {"TYPE", 10, false}, {"FIELDS", 6, false}},
-		{{"NAME", 16, true}, {"HOST MATCH", 20, true}, {"FIELDS", 6, false}},
+		{{"NAME", 16, true}, {"HOST MATCH", 24, true}, {"TYPE", 10, false}, {"FIELDS", 6, false}, {"MATCHES", 7, false}},
+		{{"NAME", 16, true}, {"HOST MATCH", 18, true}, {"FIELDS", 6, false}, {"MATCHES", 7, false}},
 		{{"NAME", 16, true}, {"HOST MATCH", 14, true}},
 	}
 	headers, widths, ok := fitCols(sets, avail)
@@ -573,11 +799,19 @@ func (e *parsersEditor) viewList(width, height int) string {
 			case "NAME":
 				cells[j] = d.Name
 			case "HOST MATCH":
-				cells[j] = strings.Join(d.HostnameMatch, ",")
+				hm := strings.Join(d.HostnameMatch, ",")
+				if hm == "" {
+					// An empty matcher means the profile is inert; say so
+					// rather than showing a blank cell.
+					hm = "! never matches"
+				}
+				cells[j] = hm
 			case "TYPE":
 				cells[j] = d.DeviceType
 			case "FIELDS":
 				cells[j] = strconv.Itoa(len(d.Fields))
+			case "MATCHES":
+				cells[j] = e.matchMark(d)
 			}
 		}
 		rows = append(rows, styledRow(cells, widths, i == e.cursor))
@@ -608,14 +842,82 @@ func (e *parsersEditor) viewList(width, height int) string {
 	return b.String()
 }
 
-// sampleView renders the newest raw lines from logs.raw_line, at most max
-// lines. It always returns at least one line so the layout stays stable.
-func (e *parsersEditor) sampleView(width, max int) []string {
-	if e.store == nil {
-		return nil
+// matchMark reports whether the cursor's profile matches the hostnames in
+// the selected file, so an inert profile is visible at a glance.
+func (e *parsersEditor) matchMark(d parser.Device) string {
+	if len(d.HostnameMatch) == 0 {
+		return "no"
 	}
-	out := []string{styleAccent.Render("RECENT RAW") +
-		styleDim.Render("   newest first, from logs.raw_line")}
+	if len(e.sample) == 0 {
+		return "?"
+	}
+	cfg := parser.Config{Version: 1, Devices: []parser.Device{{
+		Name:          d.Name,
+		HostnameMatch: d.HostnameMatch,
+		DeviceType:    d.DeviceType,
+		Fields:        d.Fields,
+		Events:        d.Events,
+	}}}
+	p, err := parser.NewParser(&cfg)
+	if err != nil {
+		return "err"
+	}
+	for _, line := range e.sample {
+		base := parser.Parse(line)
+		if base == nil {
+			continue
+		}
+		out := p.Parse(line)
+		if out != nil && (out.DeviceType != base.DeviceType || len(entryRows(out)) > len(entryRows(base))) {
+			return "yes"
+		}
+	}
+	return "no"
+}
+
+// sampleView renders the preview pane: the newest raw lines from the
+// selected file, and what the current (unsaved) profile makes of the first
+// one. It always returns at least one line so the layout stays stable.
+func (e *parsersEditor) sampleView(width, max int) []string {
+	title := "RECENT RAW"
+	note := "   newest first, from logs.raw_line"
+	if e.selectedFile != "" {
+		title = "SAMPLE → PARSED"
+		note = "   " + filepath.Base(e.selectedFile)
+	}
+	out := []string{styleAccent.Render(title) + styleDim.Render(note)}
+
+	if e.selectedFile != "" {
+		switch {
+		case e.sampleErr != "":
+			out = append(out, styleError.Render(truncateWidth("! "+e.sampleErr, width-1)))
+		case len(e.sample) == 0:
+			out = append(out, styleDim.Render("   file is empty"))
+		default:
+			// Show the parsed result, not just the raw text: this is the
+			// difference between guessing and knowing the rule works.
+			rows, err := previewLine(e.cfg, e.sample[0])
+			if err != nil {
+				out = append(out, styleError.Render(truncateWidth("! preview: "+err.Error(), width-1)))
+			}
+			out = append(out, styleDim.Render(truncateWidth("   ↳ "+cleanRawLine(e.sample[0]), width-1)))
+			if len(rows) == 0 {
+				out = append(out, styleDim.Render("   (profile produced no columns)"))
+			}
+			for _, r := range rows {
+				if len(out) > max {
+					break
+				}
+				out = append(out, styleText.Render(truncateWidth(
+					fmt.Sprintf("     %-14s %s", r.column, r.value), width-1)))
+			}
+		}
+		return out
+	}
+
+	if e.store == nil {
+		return out
+	}
 	switch {
 	case e.sampleErr != "":
 		out = append(out, styleError.Render(truncateWidth("! "+e.sampleErr, width-1)))
@@ -651,15 +953,15 @@ func cleanRawLine(s string) string {
 
 func (e *parsersEditor) viewKeywords(width, height int) string {
 	var b strings.Builder
-	b.WriteString(styleBrand.Render("◈ ASSIGN FROM KEYWORD"))
+	b.WriteString(styleBrand.Render("◈ ASSIGN FROM SAMPLE LINES"))
 	b.WriteByte('\n')
-	b.WriteString(styleDim.Render("pick a token found in recent logs, then choose its target column"))
+	b.WriteString(styleDim.Render("pick a value found in the selected file; the rule and its extraction are shown"))
 	b.WriteByte('\n')
 	if e.tokErr != "" {
 		b.WriteString(styleError.Render(e.tokErr))
 		b.WriteByte('\n')
 	}
-	if len(e.tokens) == 0 {
+	if len(e.candidates) == 0 {
 		b.WriteString("\n" + styleDim.Render("esc to return"))
 		return modalBox(b.String(), 80)
 	}
@@ -672,10 +974,16 @@ func (e *parsersEditor) viewKeywords(width, height int) string {
 	if e.tokCur >= visible {
 		start = e.tokCur - visible + 1
 	}
-	for i := start; i < len(e.tokens) && i < start+visible; i++ {
-		t := e.tokens[i]
-		line := fmt.Sprintf("%-16s = %-24s → %s", truncateWidth(t.key, 16),
-			truncateWidth(t.value, 24), t.guess)
+	for i := start; i < len(e.candidates) && i < start+visible; i++ {
+		c := e.candidates[i]
+		// Show strategy and target so the operator sees what will be saved,
+		// not just a pretty value.
+		target := c.target
+		if target == "" {
+			target = "(pick one)"
+		}
+		line := fmt.Sprintf("%-9s %-12s %-30s → %s", c.strategy, target,
+			truncateWidth(c.label, 30), truncateWidth(c.preview(), 20))
 		if i == e.tokCur {
 			line = styleSelected.Render(line)
 		}
@@ -683,7 +991,7 @@ func (e *parsersEditor) viewKeywords(width, height int) string {
 		b.WriteByte('\n')
 	}
 	b.WriteString("\n" + styleDim.Render("enter assign · ↑↓ move · esc cancel"))
-	return modalBox(b.String(), minInt(width-6, 92))
+	return modalBox(b.String(), minInt(width-6, 100))
 }
 
 func (e *parsersEditor) statusLine(width int) string {
