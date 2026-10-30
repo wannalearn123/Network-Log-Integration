@@ -950,7 +950,7 @@ func (m *Model) viewHelp() string {
 		key("q", "quit (from the dashboard)"),
 		key("ctrl+c", "quit from any screen"),
 		key("p", "pause / resume live refresh"),
-		key("/", "filter host, event, IP, MAC, SSID, interface"),
+		key("/", "filter host, event, IP, MAC, SSID, interface, timestamp"),
 		key("esc", "clear the filter"),
 		key("↑ ↓ j k", "move the selection"),
 		key("tab", "switch focus between logs and anomalies"),

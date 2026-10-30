@@ -159,7 +159,7 @@ existing behaviour. Changes apply within one second.
 |---|---|
 | `q` | quit (from the dashboard; `ctrl+c` quits from any screen) |
 | `p` | pause / resume live refresh |
-| `/` | filter host, event, IP, MAC, SSID |
+| `/` | filter host, event, IP, MAC, SSID, interface, timestamp |
 | `↑` `↓` / `j` `k` | scroll the focused pane |
 | `tab` | switch focus between logs and anomalies |
 | `enter` | open the selected row's detail (populated columns + raw line) |

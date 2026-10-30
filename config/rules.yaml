@@ -111,3 +111,17 @@ rules:
         - ROUTE_UPDATE
         - ROUTE_CHANGE
     rate: 0.2
+  - name: SYN_SCAN
+    enabled: true
+    severity: HIGH
+    description: SYN_SCAN — {count} in {window}s
+    when:
+      field: event
+      op: contains_any
+      values:
+        - SYN
+    group_by:
+      - src_ip
+    count: distinct
+    distinct_on: dst_port
+    rate: 0.4

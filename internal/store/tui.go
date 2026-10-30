@@ -45,6 +45,12 @@ type TypeCount struct {
 	Count int
 }
 
+// timestampText renders a TIMESTAMPTZ exactly as the dashboard displays it
+// ("2006-01-02 15:04:05"). Casting through to_char keeps the filter working on
+// a plain substring: "2026-10-29", "14:2" and "2026-10-29 14:23" all match,
+// without the TUI having to parse the term into a range.
+const timestampText = `to_char(timestamp, 'YYYY-MM-DD HH24:MI:SS')`
+
 // recentLogsSelect mirrors buildWindowSelect but omits the time filter and uses
 // the caller's ordering, so the dashboard can page through history.
 func recentLogsSelect(withFilter bool, limit int) string {
@@ -65,7 +71,8 @@ func recentLogsSelect(withFilter bool, limit int) string {
 		b.WriteString(` WHERE hostname ILIKE $1 OR event ILIKE $1 OR device_type ILIKE $1
 		             OR host(src_ip) ILIKE $1 OR host(dst_ip) ILIKE $1
 		             OR mac ILIKE $1 OR client_mac ILIKE $1 OR ssid ILIKE $1
-		             OR ifname ILIKE $1 OR proto ILIKE $1`)
+		             OR ifname ILIKE $1 OR proto ILIKE $1
+		             OR ` + timestampText + ` ILIKE $1`)
 	}
 	fmt.Fprintf(&b, " ORDER BY timestamp DESC LIMIT %d", limit)
 	return b.String()
@@ -113,7 +120,8 @@ func (s *Store) RecentAnomalies(ctx context.Context, limit int, search string) (
 	          FROM anomalies`
 	args := []any{}
 	if search != "" {
-		query += ` WHERE description ILIKE $1 OR severity ILIKE $1`
+		query += ` WHERE description ILIKE $1 OR severity ILIKE $1
+		           OR ` + timestampText + ` ILIKE $1`
 		args = append(args, "%"+search+"%")
 	}
 	query += fmt.Sprintf(" ORDER BY id DESC LIMIT %d", limit)

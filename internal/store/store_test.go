@@ -406,3 +406,120 @@ func TestRecentAnomaliesIncludesFeatures(t *testing.T) {
 		t.Fatalf("window times not populated: %+v", r)
 	}
 }
+
+// TestRecentLogsFiltersByTimestamp checks the dashboard filter matches the
+// rendered timestamp, not just the textual columns. Search terms are derived
+// from the database's own rendering so the test is timezone-independent.
+func TestRecentLogsFiltersByTimestamp(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	tag := randTag()
+
+	ts := time.Date(2021, 3, 14, 15, 9, 26, 0, time.UTC)
+	entry := &LogEntry{
+		Timestamp: ts, Hostname: tag, Facility: "user", Severity: "info",
+		DeviceType: "other", Event: "unknown", RawLine: "timestamp filter fixture",
+	}
+	if err := s.InsertLogEntry(ctx, entry); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	t.Cleanup(func() {
+		s.Pool.Exec(context.Background(), "DELETE FROM logs WHERE hostname = $1", tag)
+	})
+
+	// The pane renders timestamps with this same expression, so matching any
+	// slice of it is what a user typing into the filter box actually does.
+	var rendered string
+	if err := s.Pool.QueryRow(ctx,
+		`SELECT `+timestampText+` FROM logs WHERE hostname = $1`, tag).Scan(&rendered); err != nil {
+		t.Fatalf("render timestamp: %v", err)
+	}
+	if len(rendered) != len("2006-01-02 15:04:05") {
+		t.Fatalf("rendered timestamp = %q, want YYYY-MM-DD HH24:MI:SS", rendered)
+	}
+
+	cases := []struct {
+		name, search string
+		want         bool
+	}{
+		{"full date", rendered[:10], true},
+		{"date and clock", rendered[:16], true},
+		{"clock only", rendered[11:17], true},
+		{"seconds precision", rendered[11:], true},
+		{"wrong hour", "23:59:59", false},
+		{"wrong date", "1999-12-31", false},
+	}
+
+	for _, c := range cases {
+		rows, err := s.RecentLogs(ctx, 300, c.search)
+		if err != nil {
+			t.Fatalf("%s: RecentLogs: %v", c.name, err)
+		}
+		found := false
+		for _, r := range rows {
+			if r.Hostname == tag {
+				found = true
+				break
+			}
+		}
+		if found != c.want {
+			t.Errorf("%s: search %q found = %v, want %v", c.name, c.search, found, c.want)
+		}
+	}
+}
+
+// TestRecentAnomaliesFiltersByTimestamp checks the anomaly pane honours the
+// same timestamp substring as the log pane.
+func TestRecentAnomaliesFiltersByTimestamp(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	tag := randTag()
+
+	id, err := s.InsertAnomaly(ctx, Anomaly{
+		Severity: "LOW", Description: tag,
+		Features: []byte(`{"type":"TEST","entity":"10.0.0.2","repeat_count":1}`),
+	}, 30)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	t.Cleanup(func() {
+		s.Pool.Exec(context.Background(), "DELETE FROM anomalies WHERE id = $1", id)
+	})
+
+	var day string
+	if err := s.Pool.QueryRow(ctx,
+		`SELECT to_char(timestamp, 'YYYY-MM-DD') FROM anomalies WHERE id = $1`, id).Scan(&day); err != nil {
+		t.Fatalf("render date: %v", err)
+	}
+
+	// Match on the stored timestamp's own date: the pane must return the row.
+	rows, err := s.RecentAnomalies(ctx, 200, day)
+	if err != nil {
+		t.Fatalf("RecentAnomalies(%q): %v", day, err)
+	}
+	found := false
+	for _, r := range rows {
+		if r.ID == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("anomaly %d not matched by its own date %q", id, day)
+	}
+
+	// A date that cannot be the stored one must exclude it.
+	other := "1999-12-31"
+	if day == other {
+		other = "1999-12-30"
+	}
+	rows, err = s.RecentAnomalies(ctx, 200, other)
+	if err != nil {
+		t.Fatalf("RecentAnomalies(%q): %v", other, err)
+	}
+	for _, r := range rows {
+		if r.ID == id {
+			t.Fatalf("anomaly %d matched unrelated date %q", id, other)
+		}
+	}
+}

@@ -96,4 +96,28 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  paloalto:
+    build: docker/paloalto
+    container_name: paloalto
+    hostname: pa-edge1
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.5
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
+  switch2:
+    build: docker/switch2
+    container_name: switch2
+    hostname: aruba
+    networks:
+      building-lan:
+        ipv4_address: 172.20.0.6
+    depends_on:
+      syslog:
+        condition: service_healthy
+    restart: unless-stopped
+
 
